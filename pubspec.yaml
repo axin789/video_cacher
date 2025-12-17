@@ -1,0 +1,46 @@
+name: ffmpeg_remux
+description: "A new Flutter project."
+version: 0.0.1
+homepage:
+
+environment:
+  sdk: ^3.9.2
+  flutter: '>=3.3.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_web_plugins:
+    sdk: flutter
+  web: ^1.0.0
+  plugin_platform_interface: ^2.0.2
+  dio: ^5.9.0
+  path: ^1.9.0
+  #路径
+  path_provider: ^2.1.5
+  flutter_hls_parser: ^2.0.1
+  mmkv: ^2.2.4
+  crypto: ^3.0.6
+  convert: ^3.1.2
+  photo_manager: ^3.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.media.ffmpeg_remux
+        pluginClass: FfmpegRemuxPlugin
+      ios:
+        pluginClass: FfmpegRemuxPlugin
+      macos:
+        pluginClass: FfmpegRemuxPlugin
+      web:
+        pluginClass: FfmpegRemuxWeb
+        fileName: ffmpeg_remux_web.dart
+
