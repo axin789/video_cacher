@@ -1,5 +1,5 @@
 name: ffmpeg_remux
-description: "A new Flutter project."
+description: A Flutter package for downloading HLS (m3u8) streams, building local playlists, and optionally remuxing to MP4.
 version: 0.0.1
 homepage: https://github.com/axin789/ffmpeg_remux
 repository: https://github.com/axin789/ffmpeg_remux
