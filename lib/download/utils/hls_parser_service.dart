@@ -28,8 +28,8 @@ class HlsParserService {
     String mediaUrl = entryUrl;
     if (entryPlaylist is HlsMasterPlaylist) {
       if (entryPlaylist.variants.isEmpty) throw StateError('Master playlist has no variants.');
-      entryPlaylist.variants.sort((a, b) => (b.format?.bitrate ?? 0).compareTo(a.format?.bitrate ?? 0));
-      mediaUrl = entryPlaylist.variants.first.url! as String;
+      entryPlaylist.variants.sort((a, b) => (b.format.bitrate ?? 0).compareTo(a.format.bitrate ?? 0));
+      mediaUrl = entryPlaylist.variants.first.url as String;
     }
     final mediaUri = Uri.parse(mediaUrl);
     final mediaText = (await dio.get<String>(mediaUrl, options: Options(responseType: ResponseType.plain))).data ?? '';

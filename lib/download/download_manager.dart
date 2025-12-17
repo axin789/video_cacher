@@ -11,7 +11,6 @@ import 'model/download_event.dart';
 import 'model/m3u8_models.dart';
 import 'processor/android_remux_post_processor.dart';
 import 'processor/ios_post_processor.dart';
-import 'processor/ios_proxy_post_processor.dart';
 import 'processor/post_processor.dart';
 import 'task_store/task_store.dart';
 import 'task_store/task_store_base.dart';

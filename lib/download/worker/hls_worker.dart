@@ -45,6 +45,7 @@ class _SegPool {
 
 class HlsWorker extends BaseWorker<M3u8Task> {
   final Dio dio;
+  @override
   final M3u8Task task;
   final int segConcurrency;
 
