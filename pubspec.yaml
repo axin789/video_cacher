@@ -1,7 +1,9 @@
 name: ffmpeg_remux
 description: "A new Flutter project."
 version: 0.0.1
-homepage:
+homepage: https://github.com/axin789/ffmpeg_remux
+repository: https://github.com/axin789/ffmpeg_remux
+issue_tracker: https://github.com/axin789/ffmpeg_remux/issues
 
 environment:
   sdk: ^3.9.2
