@@ -49,7 +49,7 @@ class HlsParserService {
     if (keyUri != null) {
       key = KeyInfo()
         ..method = 'AES-128'
-        ..uri = _absUrl(keyUri!, mediaUri)
+        ..uri = _absUrl(keyUri, mediaUri)
         ..localName = 'key.bin'
         ..ivHex = ivHex;
     }

@@ -1,3 +1,4 @@
+import 'dart:developer' as dev;
 import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -33,13 +34,13 @@ class LocalVideoServer {
         rethrow; // 其他错误还是抛出去
       }
     } catch (e) {
-      print(' 服务启动错误: $e');
+      dev.log(' 服务启动错误: $e');
       rethrow;
     }
     _server!.defaultResponseHeaders.chunkedTransferEncoding = false;
-    print(' 服务启动: http://127.0.0.1:$port');
+    dev.log(' 服务启动: http://127.0.0.1:$port');
     _server!.listen(_handleRequest, onError: (e) {
-      print(' 服务报错: $e');
+      dev.log(' 服务报错: $e');
     });
   }
 
@@ -135,7 +136,7 @@ class LocalVideoServer {
 
   Future<String> urlForLocalM3u8(String localM3u8AbsPath) async {
     // return urlForFile('/m3u8_task/${t.taskId}/local.m3u8');
-    print("呵呵哒$localM3u8AbsPath");
+    dev.log("呵呵哒$localM3u8AbsPath");
     return urlForAbsPath(localM3u8AbsPath);
   }
 }

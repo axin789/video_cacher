@@ -19,8 +19,8 @@ class RemuxEvent {
   });
 
   factory RemuxEvent.fromMap(Map<dynamic, dynamic> m) {
-    int? asInt(dynamic v) => v == null || v is Null ? null : (v as num).toInt();
-    String? asStr(dynamic v) => v == null || v is Null ? null : v as String;
+    int? asInt(dynamic v) => v == null || v == null ? null : (v as num).toInt();
+    String? asStr(dynamic v) => v == null || v == null ? null : v as String;
 
     return RemuxEvent(
       taskId: (m['taskId'] ?? '') as String,

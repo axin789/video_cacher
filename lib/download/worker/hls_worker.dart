@@ -9,6 +9,7 @@ import '../model/m3u8_models.dart';
 import '../processor/post_processor.dart';
 import '../utils/hls_parser_service.dart';
 import '../utils/save_video_to_album.dart';
+import 'dart:developer' as dev;
 
 
 class _SegPool {
@@ -90,7 +91,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
 
   @override
   Future<void> start() async {
-    print('[HLS] start task=${task.taskId} status=${task.status}');
+    dev.log('[HLS] start task=${task.taskId} status=${task.status}');
     try {
       // ---------- prepare ----------
       await Directory(task.dir).create(recursive: true);
@@ -354,9 +355,4 @@ class HlsWorker extends BaseWorker<M3u8Task> {
     onDone?.call(task);
   }
 
-  String _safeFileName(String s) {
-    // Android/各文件系统都更稳：去掉不合法字符
-    final cleaned = s.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
-    return cleaned.isEmpty ? task.taskId : cleaned;
-  }
 }

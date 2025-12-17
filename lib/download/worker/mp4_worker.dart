@@ -7,6 +7,7 @@ import 'base_worker.dart';
 
 class Mp4Worker extends BaseWorker<M3u8Task>{
   final Dio dio;
+  @override
   final M3u8Task task;
   final void Function(M3u8Task)? onProgress;
   final void Function(M3u8Task)? onDone;

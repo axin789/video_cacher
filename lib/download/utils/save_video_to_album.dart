@@ -15,6 +15,6 @@ class AlbumSaver {
       title: title,
     );
 
-    return r != null;
+    return r.exists;
   }
 }

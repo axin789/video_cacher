@@ -1,11 +1,8 @@
 import 'dart:io';
-import 'dart:math';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import '../local_video_server.dart';
 import '../model/m3u8_models.dart';
 
-double _usToSec(int? us) => us == null ? 0.0 : us / 1e6;
 
 Future<String> buildLocalM3U8WithRelativePath(M3u8Task task) async {
   final buf = StringBuffer()

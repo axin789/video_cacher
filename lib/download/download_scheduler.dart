@@ -1,4 +1,5 @@
 import 'dart:collection';
+import 'dart:developer' as dev;
 import 'dart:io';
 import 'package:dio/dio.dart';
 
@@ -38,7 +39,7 @@ class DownloadScheduler {
   bool _inQueue(String taskId) => _queue.any((t) => t.taskId == taskId);
 
   void enqueue(M3u8Task task) {
-    print('[SCH] enqueue ${task.taskId} status=${task.status} active=${_active.containsKey(task.taskId)} q=${_queue.any((t)=>t.taskId==task.taskId)}');
+    dev.log('[SCH] enqueue ${task.taskId} status=${task.status} active=${_active.containsKey(task.taskId)} q=${_queue.any((t)=>t.taskId==task.taskId)}');
 
     // 已完成/已取消不进队列
     if (_isTerminal(task)) return;

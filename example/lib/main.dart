@@ -1,4 +1,5 @@
-import 'dart:io';
+
+import 'dart:developer' as dev;
 
 import 'package:ffmpeg_remux/download/download_library.dart';
 import 'package:flutter/material.dart';
@@ -38,7 +39,7 @@ class _HomePageState extends State<HomePage> {
   String local = "";
   String dir = "";
   double progress = 0.0;
-  bool _isDownloading = false;
+  final bool _isDownloading = false;
 
 
   double _calcProgress(M3u8Task t) {
@@ -64,12 +65,12 @@ class _HomePageState extends State<HomePage> {
       final percent = t.effectiveTotal == 0
           ? 0
           : (t.completed * 100 ~/ t.effectiveTotal);
-      print('下载进度:$percent}');
+      dev.log('下载进度:$percent}');
       if (t.status == TaskStatus.completed) {
         setState(() {
           local = '${t.dir}/local.m3u8';
           dir = t.dir;
-          print("m3u8地址或者mp4地址:${t.mp4Path}==${t.localPath}");
+          dev.log("m3u8地址或者mp4地址:${t.mp4Path}==${t.localPath}");
         });
       }
     });
