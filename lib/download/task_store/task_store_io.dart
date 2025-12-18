@@ -45,9 +45,6 @@ class TaskStoreMmkv implements TaskStore {
     await saveTasks(all);
   }
 
-  // ========================
-  // serialize
-  // ========================
   Map<String, dynamic> _toJson(M3u8Task t) {
     return {
       'taskId': t.taskId,
@@ -57,68 +54,46 @@ class TaskStoreMmkv implements TaskStore {
       'coverImg': t.coverImg,
       'url': t.url,
       'dir': t.dir,
-
-      'kind': t.kind.name,
       'status': t.status.name,
-
-      // progress
       'completed': t.completed,
-      'persistedTotal': (t.segments.isNotEmpty
-          ? t.segments.length
-          : (t.persistedTotal ?? 0)),
-      'downloaded': t.downloaded,
+      'persistedTotal': (t.segments.isNotEmpty ? t.segments.length : (t.persistedTotal ?? 0)),
+      'error': t.error,
+      'kind': t.kind.name,
+
+      // mp4 download
       'contentLength': t.contentLength,
-
-      // result
-      'localPath': t.localPath,
-      'mp4Path': t.mp4Path,
-      'playUrl': t.playUrl,
-
-      // misc
+      'downloaded': t.downloaded,
       'eTag': t.eTag,
       'tmpPath': t.tmpPath,
-      'error': t.error,
+
+      // outputs
+      'localPath': t.localPath,
+      'mp4Path': t.mp4Path,
+      'hlsLocalM3u8Path': t.hlsLocalM3u8Path,
+
+      // album
+      'albumSaved': t.albumSaved,
+      'saveToAlbum': t.saveToAlbum,
+      'albumError': t.albumError,
+
+      // extras
+      'remuxBytes': t.remuxBytes,
+      'postAttempts': t.postAttempts,
     };
   }
 
-  // ========================
-  // deserialize + 修正状态
-  // ========================
   M3u8Task _fromJson(Map<String, dynamic> v) {
     final statusName = (v['status'] as String?) ?? 'paused';
-    var status = TaskStatus.values.firstWhere(
+    final st = TaskStatus.values.firstWhere(
           (x) => x.name == statusName,
       orElse: () => TaskStatus.paused,
     );
 
     final kindName = (v['kind'] as String?) ?? 'hls';
-    final kind = SourceKind.values.firstWhere(
+    final kd = SourceKind.values.firstWhere(
           (e) => e.name == kindName,
       orElse: () => SourceKind.hls,
     );
-
-    final mp4Path = v['mp4Path'] as String?;
-    final playUrl = v['playUrl'] as String?;
-    final localPath = v['localPath'] as String? ?? '';
-
-    // ===== 冷启动状态修正 =====
-    if (status == TaskStatus.running ||
-        status == TaskStatus.postProcessing) {
-      if (kind == SourceKind.hls) {
-        if ((playUrl?.isNotEmpty ?? false) ||
-            localPath.isNotEmpty) {
-          status = TaskStatus.completed;
-        } else {
-          status = TaskStatus.paused;
-        }
-      } else {
-        if (mp4Path?.isNotEmpty ?? false) {
-          status = TaskStatus.completed;
-        } else {
-          status = TaskStatus.failed;
-        }
-      }
-    }
 
     return M3u8Task(
       taskId: v['taskId'],
@@ -129,32 +104,40 @@ class TaskStoreMmkv implements TaskStore {
       url: v['url'],
       dir: v['dir'],
 
-      kind: kind,
-      status: status,
-
+      // hls
       segments: [],
       key: null,
+      hlsLocalM3u8Path: v['hlsLocalM3u8Path'] as String?,
 
+      // common
+      status: st,
+      kind: kd,
       completed: (v['completed'] ?? 0) as int,
       persistedTotal: (v['persistedTotal'] ?? 0) as int,
+      error: v['error'] as String?,
 
+      // mp4 download
+      eTag: v['eTag'] as String?,
+      tmpPath: v['tmpPath'] as String?,
+      contentLength: v['contentLength'] as int?,
       downloaded: (v['downloaded'] ?? 0) as int,
-      contentLength: v['contentLength'],
-      eTag: v['eTag'],
-      tmpPath: v['tmpPath'],
-      error: v['error'],
 
-      localPath: localPath,
-      mp4Path: mp4Path,
-      playUrl: playUrl,
-      remuxBytes: 0, // 重启后不恢复中间进度
+      // outputs
+      localPath: v['localPath'] as String?,
+      mp4Path: v['mp4Path'] as String?,
+
+      // album
+      albumSaved: (v['albumSaved'] ?? false) as bool,
+      saveToAlbum: (v['saveToAlbum'] ?? true) as bool,
+      albumError: v['albumError'] as String?,
+
+      // extras
+      remuxBytes: (v['remuxBytes'] ?? 0) as int,
+      postAttempts: (v['postAttempts'] ?? 0) as int,
     );
   }
 }
 
-// ========================
-// MMKV init
-// ========================
 bool _inited = false;
 
 Future<void> _ensureInited() async {

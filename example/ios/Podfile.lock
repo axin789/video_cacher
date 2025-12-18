@@ -14,6 +14,9 @@ PODS:
   - path_provider_foundation (0.0.1):
     - Flutter
     - FlutterMacOS
+  - photo_manager (3.8.3):
+    - Flutter
+    - FlutterMacOS
 
 DEPENDENCIES:
   - ffmpeg_remux (from `.symlinks/plugins/ffmpeg_remux/ios`)
@@ -21,6 +24,7 @@ DEPENDENCIES:
   - integration_test (from `.symlinks/plugins/integration_test/ios`)
   - mmkv_ios (from `.symlinks/plugins/mmkv_ios/darwin`)
   - path_provider_foundation (from `.symlinks/plugins/path_provider_foundation/darwin`)
+  - photo_manager (from `.symlinks/plugins/photo_manager/darwin`)
 
 SPEC REPOS:
   trunk:
@@ -38,15 +42,18 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/mmkv_ios/darwin"
   path_provider_foundation:
     :path: ".symlinks/plugins/path_provider_foundation/darwin"
+  photo_manager:
+    :path: ".symlinks/plugins/photo_manager/darwin"
 
 SPEC CHECKSUMS:
-  ffmpeg_remux: e78fdad68ea52760d9ee0e7a6040755f3d6328fc
+  ffmpeg_remux: a90b2fedb1ae1f8afa82caf161bf66e7c0ae2311
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
   MMKV: c953dbaac0da392c24b005e763c03ce2638b4ed7
   mmkv_ios: b8849045b0f19a88abd6302378b84543a1c1e1dc
   MMKVCore: d078dce7d6586a888b2c2ef5343b6242678e3ee8
   path_provider_foundation: bb55f6dbba17d0dccd6737fe6f7f34fbd0376880
+  photo_manager: fe4cbb0808b96f8be4af7ce6ae18dcd9c9b983c6
 
 PODFILE CHECKSUM: 2c8040903f1c7de092a814b62e0ff998a796d9c2
 

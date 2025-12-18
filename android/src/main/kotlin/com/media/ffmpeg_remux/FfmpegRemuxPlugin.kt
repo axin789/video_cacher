@@ -189,10 +189,10 @@ class FfmpegRemuxPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
  */
 internal object FFmpegNative {
     init {
-        System.loadLibrary("avutil")
-        System.loadLibrary("avcodec")
-        System.loadLibrary("avformat")
-        System.loadLibrary("ffmpeg-remux")
+//        System.loadLibrary("avutil")
+//        System.loadLibrary("avcodec")
+//        System.loadLibrary("avformat")
+        System.loadLibrary("ffmpeg_remux")
     }
 
     external fun remuxM3u8ToMp4(inputPath: String, outputPath: String): Int

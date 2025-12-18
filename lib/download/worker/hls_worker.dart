@@ -1,16 +1,14 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:developer' as dev;
+
 import 'package:dio/dio.dart';
-import 'package:ffmpeg_remux/download/worker/base_worker.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:path/path.dart' as p;
 
 import '../model/m3u8_models.dart';
 import '../processor/post_processor.dart';
 import '../utils/hls_parser_service.dart';
-import '../utils/save_video_to_album.dart';
-import 'dart:developer' as dev;
-
+import 'base_worker.dart';
 
 class _SegPool {
   int running = 0;
@@ -50,7 +48,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
   final M3u8Task task;
   final int segConcurrency;
 
-  ///  Android/iOS PostProcessor，从外部注入
+  /// Android/iOS PostProcessor，从外部注入
   final PostProcessor postProcessor;
 
   final void Function(M3u8Task)? onProgress;
@@ -62,7 +60,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
 
   int _seqBase = 0;
 
-  //  下载 key 也要能 cancel
+  /// 下载 key 也要能 cancel
   CancelToken? _keyToken;
 
   HlsWorker({
@@ -81,8 +79,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
     final m3u8File = File(p.join(task.dir, 'local.m3u8'));
     if (!await m3u8File.exists()) return false;
 
-    // 2) 如果 segments 为空（从 store 恢复的任务），至少要认为已下载完成
-    //   更严谨：扫描目录 seg_*.ts 数量 >= persistedTotal
+    // 2) segments 为空（从 store 恢复的任务），认为已下载完成（更严谨你可扫目录）
     if (task.segments.isEmpty) return true;
 
     // 3) segments 全 done
@@ -93,16 +90,20 @@ class HlsWorker extends BaseWorker<M3u8Task> {
   Future<void> start() async {
     dev.log('[HLS] start task=${task.taskId} status=${task.status}');
     try {
-      // ---------- prepare ----------
       await Directory(task.dir).create(recursive: true);
 
       // 如果已下载完成，直接进入 postProcessing
       if (await _isDownloadReady()) {
         final m3u8Path = p.join(task.dir, 'local.m3u8');
-        task.localPath = m3u8Path;
+        task.hlsLocalM3u8Path = m3u8Path;
+        task.localPath = m3u8Path; // 未 remux 前，可先用 m3u8 播放（iOS 走代理）
+        onProgress?.call(task);
+
         await _doPostProcess(m3u8Path);
         return;
       }
+
+      // ---------- parse ----------
       final hls = HlsParserService(dio);
       final parsed = await hls.parseFromEntryUrl(task.url);
 
@@ -114,7 +115,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
 
       onProgress?.call(task);
 
-      // ---------- download key (no decrypt) ----------
+      // ---------- download key ----------
       if (_paused || _canceled) {
         _finishByControl();
         return;
@@ -152,16 +153,16 @@ class HlsWorker extends BaseWorker<M3u8Task> {
 
       // ---------- write local m3u8 ----------
       final m3u8Path = await _writeLocalM3u8();
-      task.localPath = m3u8Path;
+      task.hlsLocalM3u8Path = m3u8Path;
+      task.localPath = m3u8Path; // remux 前先可播放
+      onProgress?.call(task);
 
       if (_paused || _canceled) {
         _finishByControl();
         return;
       }
 
-      // =========================
-      // === post processing（Android remux / iOS proxy）
-      // =========================
+      // ---------- post process ----------
       await _doPostProcess(m3u8Path);
     } catch (e) {
       task.status = TaskStatus.failed;
@@ -175,7 +176,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
     task.postAttempts += 1;
     onProgress?.call(task);
 
-    final outMp4 = p.join(task.dir, '${task.name}.mp4'); // 你要的 mp4 名
+    final outMp4 = p.join(task.dir, '${task.name}.mp4');
 
     final r = await postProcessor.run(
       inM3u8: m3u8Path,
@@ -187,30 +188,34 @@ class HlsWorker extends BaseWorker<M3u8Task> {
       },
     );
 
+    if (_paused || _canceled) {
+      _finishByControl();
+      return;
+    }
+
     if (r.ret == 0) {
-      task.mp4Path = r.outMp4 ?? outMp4;
+      final mp4 = r.outMp4 ?? outMp4;
+
+      //统一产物字段
+      task.mp4Path = mp4;
+      task.localPath = mp4; // UI 播放统一看 localPath
       task.status = TaskStatus.completed;
       task.error = null;
       onProgress?.call(task);
 
-      //  只在成功时清理 ts/key/m3u8
+      // 只在成功时清理 ts/key/m3u8（保留 mp4）
       await postProcessor.cleanup(
         task: task,
         inM3u8: m3u8Path,
-        outMp4: task.mp4Path!,
+        outMp4: mp4,
         success: true,
       );
-      final ok = await AlbumSaver.saveVideo(task.mp4Path!, title: task.name);
-      if (ok) {
-        debugPrint("保存相册成功");
-      } else {
-        debugPrint("保存相册失败");
-      }
+
       onDone?.call(task);
       return;
     }
 
-    //失败：不清理，保留 ts 等待重试
+    // 失败：不清理，保留 ts 等待重试
     task.status = TaskStatus.failed;
     task.error = 'postProcess ret=${r.ret}';
     onProgress?.call(task);
@@ -250,7 +255,6 @@ class HlsWorker extends BaseWorker<M3u8Task> {
       }
     }
   }
-
 
   Future<String> _writeLocalM3u8() async {
     final out = StringBuffer();
@@ -293,36 +297,27 @@ class HlsWorker extends BaseWorker<M3u8Task> {
   }
 
   double _toSeconds(int d) {
-    // 1) 微秒（最常见：mpegts / ffmpeg）
-    if (d >= 1_000_000) {
-      return d / 1_000_000.0;
-    }
-
-    // 2) 毫秒（部分后端 / 播放器会给）
-    if (d >= 1_000) {
-      return d / 1_000.0;
-    }
-
-    // 3) 已经是秒（兜底）
+    // 微秒
+    if (d >= 1_000_000) return d / 1_000_000.0;
+    // 毫秒
+    if (d >= 1_000) return d / 1_000.0;
+    // 秒
     return d.toDouble();
   }
-
 
   @override
   void pause() {
     _paused = true;
 
-    // cancel key download
+    // cancel key
     _keyToken?.cancel('paused');
     _keyToken = null;
 
-    // cancel ts downloads
+    // cancel segments
     for (final s in task.segments) {
       s.token?.cancel('paused');
     }
 
-    // ✅ 如果后处理中也支持取消，调用一下（你 PostProcessor 里可以实现 cancel）
-    postProcessor.cancel.call(task);
   }
 
   @override
@@ -335,9 +330,6 @@ class HlsWorker extends BaseWorker<M3u8Task> {
     for (final s in task.segments) {
       s.token?.cancel('canceled');
     }
-
-    // ✅ 通知后处理取消（比如 Android remux cancel）
-    postProcessor.cancel.call(task);
 
     if (deleteFiles) {
       try {
@@ -354,5 +346,4 @@ class HlsWorker extends BaseWorker<M3u8Task> {
     }
     onDone?.call(task);
   }
-
 }
