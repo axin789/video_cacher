@@ -43,6 +43,10 @@
 	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>需要将导出的视频保存到系统相册</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>需要访问系统相册以保存和查看导出的视频</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 </dict>

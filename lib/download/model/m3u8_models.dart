@@ -6,7 +6,7 @@ enum SourceKind { hls, mp4 }
 
 class Segment {
   final int index;
-  final String remoteUri;
+  String remoteUri;
   final String localName;
   bool done;
   int retry;
@@ -35,7 +35,7 @@ class M3u8Task {
   final String name;
   final String coverImg;
 
-  final String url;
+  String url;
   final String dir;
 
   SourceKind kind;

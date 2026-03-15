@@ -28,8 +28,31 @@ class HlsParserService {
     String mediaUrl = entryUrl;
     if (entryPlaylist is HlsMasterPlaylist) {
       if (entryPlaylist.variants.isEmpty) throw StateError('Master playlist has no variants.');
-      entryPlaylist.variants.sort((a, b) => (b.format.bitrate ?? 0).compareTo(a.format.bitrate ?? 0));
-      mediaUrl = entryPlaylist.variants.first.url as String;
+
+      // 优先选择“有视频轨且兼容性更高”的流，避免只音频或设备不兼容导致黑屏有声
+      final variants = [...entryPlaylist.variants];
+      variants.sort((a, b) {
+        int scoreOf(Variant v) {
+          final format = v.format;
+          final codecs = (format.codecs ?? '').toLowerCase();
+          final hasResolution = format.width != null || format.height != null;
+
+          int score = 0;
+          // 明确是 H264 轨优先（兼容最好）
+          if (codecs.contains('avc1')) score += 1000;
+          // 仅有视频轨信息优先
+          if (hasResolution) score += 500;
+          // HEVC 次优（部分设备/播放器兼容较弱）
+          if (codecs.contains('hvc1') || codecs.contains('hev1')) score += 200;
+
+          score += (format.bitrate ?? 0) ~/ 1000;
+          return score;
+        }
+
+        return scoreOf(b).compareTo(scoreOf(a));
+      });
+
+      mediaUrl = variants.first.url as String;
     }
     final mediaUri = Uri.parse(mediaUrl);
     final mediaText = (await dio.get<String>(mediaUrl, options: Options(responseType: ResponseType.plain))).data ?? '';

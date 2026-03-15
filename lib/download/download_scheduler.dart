@@ -11,15 +11,19 @@ import 'worker/base_worker.dart';
 import 'worker/hls_worker.dart';
 import 'worker/mp4_worker.dart';
 
+typedef DownloadRefreshUrl = Future<String> Function(String id);
+
 class DownloadScheduler {
   final Dio dio;
   final int maxActiveVideos;
-
 
   final FutureOr<void> Function(M3u8Task)? onTaskUpdate;
 
   /// HLS 后处理注入（Android remux / iOS remux 或 proxy）
   final PostProcessor postProcessor;
+
+  /// 外部注入：URL 失效时通过业务 id 刷新下载地址
+  DownloadRefreshUrl? refreshUrl;
 
   final Queue<M3u8Task> _queue = Queue();
   final Map<String, BaseWorker<M3u8Task>> _active = {};
@@ -31,6 +35,7 @@ class DownloadScheduler {
     required this.postProcessor,
     this.maxActiveVideos = 3,
     this.onTaskUpdate,
+    this.refreshUrl,
   });
 
   bool isActive(String taskId) => _active.containsKey(taskId);
@@ -54,7 +59,8 @@ class DownloadScheduler {
     if (_isTerminal(task)) return;
     if (_active.containsKey(task.taskId) || _inQueue(task.taskId)) return;
 
-    if (task.status == TaskStatus.running || task.status == TaskStatus.postProcessing) {
+    if (task.status == TaskStatus.running ||
+        task.status == TaskStatus.postProcessing) {
       return;
     }
 
@@ -106,6 +112,7 @@ class DownloadScheduler {
           task: task,
           segConcurrency: 2,
           postProcessor: postProcessor,
+          refreshUrl: refreshUrl,
           onProgress: _notify,
           onDone: _notify,
         );
@@ -113,6 +120,7 @@ class DownloadScheduler {
         return Mp4Worker(
           dio: dio,
           task: task,
+          refreshUrl: refreshUrl,
           onProgress: _notify,
           onDone: _notify,
         );

@@ -1,12 +1,18 @@
 name: ffmpeg_remux
-description: A Flutter package for downloading HLS (m3u8) streams, building local playlists, and optionally remuxing to MP4.
-version: 0.0.3
+description: Flutter plugin for offline video caching with mp4 and m3u8 downloads, HLS remux to mp4, URL refresh, and album copy support.
+version: 0.0.4
 homepage: https://github.com/axin789/ffmpeg_remux
 repository: https://github.com/axin789/ffmpeg_remux
 issue_tracker: https://github.com/axin789/ffmpeg_remux/issues
+topics:
+  - video
+  - download
+  - m3u8
+  - ffmpeg
+  - offline
 
 environment:
-  sdk: ^3.9.2
+  sdk: '>=3.6.0 <4.0.0'
   flutter: '>=3.3.0'
 
 dependencies:
@@ -18,10 +24,10 @@ dependencies:
   plugin_platform_interface: ^2.0.2
   dio: ^5.9.0
   path: ^1.9.0
-  #路径
   path_provider: ^2.1.5
   flutter_hls_parser: ^2.0.1
-  mmkv: ^2.2.4
+  sqlite3: ^2.7.6
+  sqlite3_flutter_libs: ^0.5.31
   crypto: ^3.0.6
   convert: ^3.1.2
   photo_manager: ^3.0.0
@@ -29,7 +35,7 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^6.0.0
+  flutter_lints: ^5.0.0
 
 
 flutter:
@@ -45,4 +51,3 @@ flutter:
       web:
         pluginClass: FfmpegRemuxWeb
         fileName: ffmpeg_remux_web.dart
-

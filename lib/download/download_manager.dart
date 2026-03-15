@@ -16,7 +16,7 @@ import 'task_store/task_store_base.dart';
 import 'utils/save_video_to_album.dart';
 import 'utils/source_detector.dart';
 
-
+typedef RefreshUrl = Future<String> Function(String id);
 
 class DownloadManager {
   DownloadManager._();
@@ -30,6 +30,7 @@ class DownloadManager {
   Directory? baseDir;
   late final PostProcessor _postProcessor;
   final Map<String, M3u8Task> _tasks = {};
+  RefreshUrl? _refreshUrl;
 
   final _controller = StreamController<M3u8Task>.broadcast();
   Stream<M3u8Task> get taskStream => _controller.stream;
@@ -37,6 +38,14 @@ class DownloadManager {
 
   /// 防止同一个任务“同时触发多次保存相册”
   final Set<String> _albumSaving = {};
+
+  /// 业务方注入：URL 失效(404)时按 id 刷新下载链接
+  void setRefreshUrl(RefreshUrl? fn) {
+    _refreshUrl = fn;
+    if (_inited) {
+      scheduler.refreshUrl = fn;
+    }
+  }
 
   Future<void> ensureInitialized() async {
     if (_inited) return;
@@ -64,6 +73,7 @@ class DownloadManager {
       dio: dio,
       maxActiveVideos: 3,
       postProcessor: _postProcessor,
+      refreshUrl: _refreshUrl,
       onTaskUpdate: (t) async {
         _tasks[t.taskId] = t;
 
@@ -72,7 +82,7 @@ class DownloadManager {
         _controller.add(t);
 
         // 下载/转换完成后自动保存相册（HLS+MP4 都走这里）
-        if(t.saveToAlbum){
+        if (t.saveToAlbum) {
           await _autoSaveToAlbumIfNeeded(t);
         }
       },
@@ -82,29 +92,39 @@ class DownloadManager {
     final restored = await store.loadTasks();
     _tasks.addAll(restored);
 
-    // 自动恢复 running/queued
+    // 进程被杀后，持久化中的运行态已不可信。
+    // 冷启动时统一转成 paused，要求用户手动继续，避免偷偷自动续传。
     for (final t in _tasks.values) {
-      if (t.status == TaskStatus.running || t.status == TaskStatus.queued) {
-        scheduler.enqueue(t);
+      if (t.status == TaskStatus.running ||
+          t.status == TaskStatus.queued ||
+          t.status == TaskStatus.postProcessing) {
+        t.status = TaskStatus.paused;
+        await store.upsertTask(t);
       }
     }
 
     _inited = true;
   }
 
-  Future<void> _autoSaveToAlbumIfNeeded(M3u8Task t) async {
+  Future<AlbumSaveResult> _autoSaveToAlbumIfNeeded(M3u8Task t) async {
     // 只处理 completed
-    if (t.status != TaskStatus.completed) return;
+    if (t.status != TaskStatus.completed) {
+      return const AlbumSaveResult(false, 'task not completed');
+    }
 
     // 必须有 mp4Path
     final mp4 = t.mp4Path;
-    if (mp4 == null || mp4.isEmpty) return;
+    if (mp4 == null || mp4.isEmpty) {
+      return const AlbumSaveResult(false, 'mp4 path is empty');
+    }
 
     // 已保存过就跳过
-    if (t.albumSaved) return;
+    if (t.albumSaved) return const AlbumSaveResult(true);
 
     // 防重入
-    if (_albumSaving.contains(t.taskId)) return;
+    if (_albumSaving.contains(t.taskId)) {
+      return const AlbumSaveResult(false, 'album save in progress');
+    }
     _albumSaving.add(t.taskId);
 
     try {
@@ -114,7 +134,7 @@ class DownloadManager {
         t.albumError = 'mp4 not exists';
         await store.upsertTask(t);
         _controller.add(t);
-        return;
+        return AlbumSaveResult(false, t.albumError);
       }
       final len = await f.length();
       if (len <= 0) {
@@ -122,29 +142,49 @@ class DownloadManager {
         t.albumError = 'mp4 is empty';
         await store.upsertTask(t);
         _controller.add(t);
-        return;
+        return AlbumSaveResult(false, t.albumError);
       }
 
       // 保存相册（不影响任务完成状态）
-      final ok = await AlbumSaver.saveVideo(mp4, title: t.name);
-      if (ok) {
+      final r = await AlbumSaver.saveVideoWithResult(mp4, title: t.name);
+      if (r.ok) {
         t.albumSaved = true;
         t.albumError = null;
       } else {
         t.albumSaved = false;
-        t.albumError = 'save album failed';
+        t.albumError = r.error ?? 'save album failed';
       }
 
       await store.upsertTask(t);
       _controller.add(t);
+      return AlbumSaveResult(t.albumSaved, t.albumError);
     } catch (e) {
       t.albumSaved = false;
       t.albumError = e.toString();
       await store.upsertTask(t);
       _controller.add(t);
+      return AlbumSaveResult(false, t.albumError);
     } finally {
       _albumSaving.remove(t.taskId);
     }
+  }
+
+  Future<M3u8Task> enqueue({
+    required String id,
+    required String name,
+    required String cover,
+    required String url,
+    bool saveToAlbum = true,
+  }) {
+    return addOrResumeFormMeta(
+      taskId: id,
+      movieId: id,
+      lid: id,
+      name: name,
+      coverImg: cover,
+      url: url,
+      saveToAlbum: saveToAlbum,
+    );
   }
 
   Future<M3u8Task> addOrResumeFormMeta({
@@ -189,22 +229,98 @@ class DownloadManager {
 
   void pause(String taskId) => scheduler.pause(taskId);
 
+  Future<void> setMaxConcurrency(int n) async {
+    await ensureInitialized();
+    if (n < 1) return;
+    scheduler = DownloadScheduler(
+      dio: dio,
+      maxActiveVideos: n,
+      postProcessor: _postProcessor,
+      refreshUrl: _refreshUrl,
+      onTaskUpdate: (t) async {
+        _tasks[t.taskId] = t;
+        await store.upsertTask(t);
+        _controller.add(t);
+        if (t.saveToAlbum) {
+          await _autoSaveToAlbumIfNeeded(t);
+        }
+      },
+    );
+    for (final t in _tasks.values) {
+      if (!t.isFinished && t.status != TaskStatus.paused) {
+        scheduler.enqueue(t);
+      }
+    }
+  }
+
   void resumeById(String taskId) {
     final t = _tasks[taskId];
     if (t != null) scheduler.resume(t);
+  }
+
+  Future<bool> retryFailedTaskById(String taskId, {String? overrideUrl}) async {
+    await ensureInitialized();
+    final t = _tasks[taskId];
+    if (t == null) return false;
+    if (t.status != TaskStatus.failed) {
+      scheduler.resume(t);
+      return true;
+    }
+
+    final preferredUrl = overrideUrl?.trim();
+    if (preferredUrl != null && preferredUrl.isNotEmpty) {
+      t.url = preferredUrl;
+    } else if (_refreshUrl != null) {
+      final newUrl = (await _refreshUrl!(taskId)).trim();
+      if (newUrl.isEmpty) {
+        t.error = 'refresh url is empty';
+        await store.upsertTask(t);
+        _controller.add(t);
+        return false;
+      }
+      t.url = newUrl;
+    }
+
+    t.error = null;
+    scheduler.resume(t);
+    await store.upsertTask(t);
+    _controller.add(t);
+    return true;
   }
 
   Future<void> cancel(String taskId, {bool deleteFiles = false}) async {
     await scheduler.cancel(taskId, deleteFiles: deleteFiles);
   }
 
+  Future<bool> copyToAlbum(String taskId) async {
+    final r = await copyToAlbumWithResult(taskId);
+    return r.ok;
+  }
+
+  Future<AlbumSaveResult> copyToAlbumWithResult(String taskId) async {
+    await ensureInitialized();
+    final t = _tasks[taskId];
+    if (t == null) return const AlbumSaveResult(false, 'task not found');
+    return _autoSaveToAlbumIfNeeded(t);
+  }
+
+  Future<bool> copyPathToAlbum(String mp4Path, {String? title}) {
+    return copyPathToAlbumWithResult(mp4Path, title: title).then((r) => r.ok);
+  }
+
+  Future<AlbumSaveResult> copyPathToAlbumWithResult(String mp4Path,
+      {String? title}) {
+    return AlbumSaver.saveVideoWithResult(mp4Path, title: title);
+  }
 
   Future<void> deleteTaskById(String taskId) async {
     await ensureInitialized();
     final t = _tasks[taskId];
     if (t == null) return;
 
-    try { await cancel(taskId, deleteFiles: false); } catch (_) {}
+    try {
+      await cancel(taskId, deleteFiles: false);
+    } catch (_) {}
 
     try {
       final dir = Directory(t.dir);

@@ -53,7 +53,7 @@ class LocalVideoServer {
 
   Future<void> _handleRequest(HttpRequest req) async {
     try {
-      final root = await getApplicationSupportDirectory();
+      final root = await getApplicationDocumentsDirectory();
       final rootPath = root.path;
       final rel = Uri.decodeFull(req.uri.path);
       final relNoSlash = rel.startsWith('/') ? rel.substring(1) : rel;
@@ -121,7 +121,7 @@ class LocalVideoServer {
   String urlForFile(String absPath) => 'http://127.0.0.1:$port${Uri.encodeFull(absPath)}';
 
   Future<String> urlForAbsPath(String absPath) async {
-    final root = await getApplicationSupportDirectory(); // ✅ 改这里
+    final root = await getApplicationDocumentsDirectory();
     final rootPath = p.normalize(root.path);
     final ap = p.normalize(absPath);
 

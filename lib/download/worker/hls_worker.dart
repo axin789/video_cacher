@@ -7,8 +7,11 @@ import 'package:path/path.dart' as p;
 
 import '../model/m3u8_models.dart';
 import '../processor/post_processor.dart';
+import '../utils/file_name.dart';
 import '../utils/hls_parser_service.dart';
 import 'base_worker.dart';
+
+typedef HlsRefreshUrl = Future<String> Function(String id);
 
 class _SegPool {
   int running = 0;
@@ -22,8 +25,9 @@ class _SegPool {
     _q.add(() async {
       try {
         await job();
-      } finally {
-        c.complete();
+        if (!c.isCompleted) c.complete();
+      } catch (e, st) {
+        if (!c.isCompleted) c.completeError(e, st);
       }
     });
     _pump();
@@ -53,6 +57,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
 
   final void Function(M3u8Task)? onProgress;
   final void Function(M3u8Task)? onDone;
+  final HlsRefreshUrl? refreshUrl;
 
   bool _paused = false;
   bool _canceled = false;
@@ -63,6 +68,8 @@ class HlsWorker extends BaseWorker<M3u8Task> {
   /// 下载 key 也要能 cancel
   CancelToken? _keyToken;
 
+  Future<void>? _refreshingUrls;
+
   HlsWorker({
     required this.dio,
     required this.task,
@@ -70,6 +77,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
     this.segConcurrency = 2,
     this.onProgress,
     this.onDone,
+    this.refreshUrl,
   }) {
     _pool = _SegPool(segConcurrency);
   }
@@ -105,7 +113,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
 
       // ---------- parse ----------
       final hls = HlsParserService(dio);
-      final parsed = await hls.parseFromEntryUrl(task.url);
+      final parsed = await _parseWithRefresh(hls);
 
       task.segments = parsed.segments;
       task.persistedTotal = parsed.segments.length;
@@ -124,12 +132,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
       if (task.key?.uri != null && task.key?.localName != null) {
         final keyFile = File(p.join(task.dir, task.key!.localName!));
         if (!await keyFile.exists()) {
-          _keyToken = CancelToken();
-          await dio.download(
-            task.key!.uri!,
-            keyFile.path,
-            cancelToken: _keyToken,
-          );
+          await _downloadKeyWithRefresh(keyFile.path);
         }
       }
 
@@ -148,6 +151,14 @@ class HlsWorker extends BaseWorker<M3u8Task> {
 
       if (_paused || _canceled) {
         _finishByControl();
+        return;
+      }
+
+      // 关键一致性校验：分片不完整时直接失败，避免写出坏 m3u8 并进入后处理
+      if (!task.segments.every((s) => s.done)) {
+        task.status = TaskStatus.failed;
+        task.error = 'segment download incomplete';
+        onDone?.call(task);
         return;
       }
 
@@ -176,50 +187,177 @@ class HlsWorker extends BaseWorker<M3u8Task> {
     task.postAttempts += 1;
     onProgress?.call(task);
 
-    final outMp4 = p.join(task.dir, '${task.name}.mp4');
+    final safeName = sanitizeFileName(task.name, fallback: task.taskId);
+    final finalOutMp4 = p.join(task.dir, '$safeName.mp4');
+    final tmpOutMp4 = p.join(task.dir, '$safeName.remux_tmp.mp4');
 
-    final r = await postProcessor.run(
-      inM3u8: m3u8Path,
-      outMp4: outMp4,
-      task: task,
-      onBytes: (bytes) {
-        task.remuxBytes = bytes;
+    try {
+      final tmpFile = File(tmpOutMp4);
+      if (await tmpFile.exists()) {
+        try { await tmpFile.delete(); } catch (_) {}
+      }
+
+      final r = await postProcessor
+          .run(
+            inM3u8: m3u8Path,
+            outMp4: tmpOutMp4,
+            task: task,
+            onBytes: (bytes) {
+              task.remuxBytes = bytes;
+              onProgress?.call(task);
+            },
+          )
+          .timeout(const Duration(minutes: 20), onTimeout: () {
+            return PostProcessResult(ret: -9901, outMp4: tmpOutMp4);
+          });
+
+      if (_paused || _canceled) {
+        // 最小改动实现“强取消语义”：取消后即使 native 返回成功，也不产出最终 mp4
+        try { if (await tmpFile.exists()) await tmpFile.delete(); } catch (_) {}
+        _finishByControl();
+        return;
+      }
+
+      if (r.ret == 0) {
+        final produced = File(r.outMp4 ?? tmpOutMp4);
+        if (!await produced.exists()) {
+          task.status = TaskStatus.failed;
+          task.error = 'postProcess success but output missing';
+          onDone?.call(task);
+          return;
+        }
+        final outSize = await produced.length();
+        if (outSize <= 1024) {
+          task.status = TaskStatus.failed;
+          task.error = 'postProcess output too small: $outSize';
+          onDone?.call(task);
+          return;
+        }
+
+        final finalFile = File(finalOutMp4);
+        if (await finalFile.exists()) {
+          try { await finalFile.delete(); } catch (_) {}
+        }
+        await produced.rename(finalOutMp4);
+
+        //统一产物字段
+        task.mp4Path = finalOutMp4;
+        task.localPath = finalOutMp4;
+        task.status = TaskStatus.completed;
+        task.error = null;
         onProgress?.call(task);
-      },
-    );
 
-    if (_paused || _canceled) {
-      _finishByControl();
-      return;
-    }
+        // 只在成功时清理 ts/key/m3u8（保留 mp4）
+        await postProcessor.cleanup(
+          task: task,
+          inM3u8: m3u8Path,
+          outMp4: finalOutMp4,
+          success: true,
+        );
 
-    if (r.ret == 0) {
-      final mp4 = r.outMp4 ?? outMp4;
+        onDone?.call(task);
+        return;
+      }
 
-      //统一产物字段
-      task.mp4Path = mp4;
-      task.localPath = mp4; // UI 播放统一看 localPath
-      task.status = TaskStatus.completed;
-      task.error = null;
+      // 失败：不清理，保留 ts 等待重试
+      task.status = TaskStatus.failed;
+      task.error = 'postProcess ret=${r.ret}';
       onProgress?.call(task);
-
-      // 只在成功时清理 ts/key/m3u8（保留 mp4）
-      await postProcessor.cleanup(
-        task: task,
-        inM3u8: m3u8Path,
-        outMp4: mp4,
-        success: true,
-      );
-
       onDone?.call(task);
-      return;
+    } catch (e) {
+      task.status = TaskStatus.failed;
+      task.error = 'postProcess error: $e';
+      onDone?.call(task);
+    }
+  }
+
+  Future<HlsParsedResult> _parseWithRefresh(HlsParserService hls) async {
+    try {
+      return await hls.parseFromEntryUrl(task.url);
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if ((code == 404 || code == 410) && refreshUrl != null) {
+        final newUrl = await refreshUrl!(task.taskId);
+        if (newUrl.trim().isNotEmpty) {
+          task.url = newUrl.trim();
+          return hls.parseFromEntryUrl(task.url);
+        }
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _downloadKeyWithRefresh(String keyPath) async {
+    const maxRetry = 3;
+    var retry = 0;
+    while (true) {
+      if (_paused || _canceled) return;
+      try {
+        _keyToken = CancelToken();
+        await dio.download(task.key!.uri!, keyPath, cancelToken: _keyToken);
+        return;
+      } on DioException catch (e) {
+        if (e.type == DioExceptionType.cancel) return;
+        if (_isExpiredStatus(e.response?.statusCode)) {
+          await _refreshHlsUrlsIfNeeded();
+          continue;
+        }
+        retry++;
+        if (retry > maxRetry) rethrow;
+        await Future.delayed(Duration(seconds: 1 << (retry - 1)));
+      }
+    }
+  }
+
+  bool _isExpiredStatus(int? code) => code == 404 || code == 410;
+
+  bool _isNetworkDownError(DioException e) {
+    if (e.type == DioExceptionType.connectionError ||
+        e.type == DioExceptionType.connectionTimeout) {
+      return true;
+    }
+    final msg = e.error?.toString().toLowerCase() ?? '';
+    return msg.contains('socketexception') ||
+        msg.contains('failed host lookup') ||
+        msg.contains('network is unreachable');
+  }
+
+  Future<void> _refreshHlsUrlsIfNeeded() async {
+    if (refreshUrl == null) return;
+    if (_refreshingUrls != null) return _refreshingUrls!;
+
+    final f = _refreshHlsUrls();
+    _refreshingUrls = f;
+    try {
+      await f;
+    } finally {
+      if (identical(_refreshingUrls, f)) {
+        _refreshingUrls = null;
+      }
+    }
+  }
+
+  Future<void> _refreshHlsUrls() async {
+    final newUrl = await refreshUrl!(task.taskId);
+    final trimmed = newUrl.trim();
+    if (trimmed.isEmpty) return;
+
+    task.url = trimmed;
+    final hls = HlsParserService(dio);
+    final parsed = await hls.parseFromEntryUrl(task.url);
+
+    if (parsed.segments.length != task.segments.length) {
+      throw StateError('playlist segment count changed: old=${task.segments.length}, new=${parsed.segments.length}');
     }
 
-    // 失败：不清理，保留 ts 等待重试
-    task.status = TaskStatus.failed;
-    task.error = 'postProcess ret=${r.ret}';
+    for (var i = 0; i < task.segments.length; i++) {
+      task.segments[i].remoteUri = parsed.segments[i].remoteUri;
+      task.segments[i].duration = parsed.segments[i].duration;
+    }
+
+    task.key = parsed.key;
+    _seqBase = parsed.mediaSequenceBase;
     onProgress?.call(task);
-    onDone?.call(task);
   }
 
   Future<void> _downloadRaw(Segment seg) async {
@@ -250,7 +388,19 @@ class HlsWorker extends BaseWorker<M3u8Task> {
         break;
       } catch (e) {
         if (e is DioException && e.type == DioExceptionType.cancel) return;
-        if (++seg.retry > maxRetry) break;
+
+        // 断网/连接异常：快速失败，避免长时间卡在 running
+        if (e is DioException && _isNetworkDownError(e)) {
+          throw StateError('network unavailable');
+        }
+
+        if (e is DioException && _isExpiredStatus(e.response?.statusCode)) {
+          await _refreshHlsUrlsIfNeeded();
+          continue;
+        }
+        if (++seg.retry > maxRetry) {
+          throw StateError('segment failed: ${seg.remoteUri}');
+        }
         await Future.delayed(Duration(seconds: 1 << (seg.retry - 1))); // 1,2,4s
       }
     }
@@ -318,11 +468,16 @@ class HlsWorker extends BaseWorker<M3u8Task> {
       s.token?.cancel('paused');
     }
 
+    // 尝试中断后处理(remux)
+    postProcessor.cancel(task);
   }
 
   @override
   Future<void> cancel({bool deleteFiles = false}) async {
     _canceled = true;
+
+    // 尝试中断后处理(remux)
+    postProcessor.cancel(task);
 
     _keyToken?.cancel('canceled');
     _keyToken = null;
