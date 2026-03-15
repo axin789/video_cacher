@@ -3,9 +3,9 @@ import 'package:flutter/services.dart';
 
 class RemuxEvent {
   final String taskId;
-  final String state; // running/completed/failed/canceled
-  final double progress; // 0~1
-  final int? ret; // completed ret=0, failed ret<0
+  final String state; // running/completed/failed/canceled，表示转换状态
+  final double progress; // 0~1，表示当前转换进度
+  final int? ret; // completed 时 ret=0，failed 时 ret<0
   final String? outPath;
   final String? message;
 
@@ -32,7 +32,8 @@ class RemuxEvent {
     );
   }
 
-  bool get isDone => state == 'completed' || state == 'failed' || state == 'canceled';
+  bool get isDone =>
+      state == 'completed' || state == 'failed' || state == 'canceled';
   bool get isSuccess => state == 'completed' && (ret ?? -1) == 0;
 }
 
@@ -48,12 +49,12 @@ class FfmpegRemuxIos {
     return _stream!;
   }
 
-  /// 异步开始（iOS：后台线程跑，不堵 UI）
-  /// 返回：0=accepted; <0=参数/平台错误（一般不会）
+  /// 异步开始转换（iOS 在后台线程执行，不阻塞界面）
+  /// 返回：0 表示已接受任务，<0 表示参数或平台错误
   static Future<int> startRemux({
     required String taskId,
-    required String inM3u8,  // 传 local.m3u8 的绝对路径
-    required String outPath, // 传 mp4 输出绝对路径
+    required String inM3u8, // 传入 local.m3u8 的绝对路径
+    required String outPath, // 传入 mp4 输出文件绝对路径
   }) async {
     final ret = await _ch.invokeMethod<int>('startRemux', {
       'taskId': taskId,
@@ -63,7 +64,7 @@ class FfmpegRemuxIos {
     return ret ?? -1;
   }
 
-  /// 软取消（真正中断需要你改 C 层加 interrupt_callback）
+  /// 软取消（如果需要真正中断，需要在 C 层补 interrupt_callback）
   static Future<void> cancelRemux({required String taskId}) async {
     await _ch.invokeMethod('cancelRemux', {'taskId': taskId});
   }

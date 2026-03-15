@@ -35,25 +35,31 @@ class Mp4Worker extends BaseWorker<M3u8Task> {
     try {
       await Directory(task.dir).create(recursive: true);
 
-      final safeName = sanitizeFileName(task.name.isEmpty ? task.taskId : task.name, fallback: task.taskId);
+      final safeName = sanitizeFileName(
+          task.name.isEmpty ? task.taskId : task.name,
+          fallback: task.taskId);
       final outPath = p.join(task.dir, '$safeName.mp4');
       final partPath = task.tmpPath ?? p.join(task.dir, '$safeName.mp4.part');
       task.tmpPath = partPath;
 
-      // 1) HEAD 获取长度 / ETag（若 URL 失效，尝试刷新）
+      // 1) 先通过 HEAD 获取长度和 ETag（若 URL 失效则尝试刷新）
       try {
-        final head = await dio.head(task.url, options: Options(followRedirects: true));
-        task.contentLength = int.tryParse(head.headers.value(Headers.contentLengthHeader) ?? '');
+        final head =
+            await dio.head(task.url, options: Options(followRedirects: true));
+        task.contentLength =
+            int.tryParse(head.headers.value(Headers.contentLengthHeader) ?? '');
         task.persistedTotal = task.contentLength ?? task.persistedTotal;
         task.eTag = head.headers.value('etag') ?? head.headers.value('eTag');
       } on DioException catch (e) {
         if (await _tryRefreshUrlOnExpired(e)) {
-          final head = await dio.head(task.url, options: Options(followRedirects: true));
-          task.contentLength = int.tryParse(head.headers.value(Headers.contentLengthHeader) ?? '');
+          final head =
+              await dio.head(task.url, options: Options(followRedirects: true));
+          task.contentLength = int.tryParse(
+              head.headers.value(Headers.contentLengthHeader) ?? '');
           task.persistedTotal = task.contentLength ?? task.persistedTotal;
           task.eTag = head.headers.value('etag') ?? head.headers.value('eTag');
         } else {
-          // 部分 CDN/源站不支持 HEAD，允许继续 GET 下载
+          // 部分 CDN 或源站不支持 HEAD，请求失败时允许继续走 GET 下载
           task.contentLength = null;
         }
       }
@@ -63,7 +69,7 @@ class Mp4Worker extends BaseWorker<M3u8Task> {
       int downloaded = await part.exists() ? await part.length() : 0;
       task.downloaded = downloaded;
 
-      //  用 completed 统一承载“进度值”
+      // 用 completed 字段统一承载“当前已下载字节数”
       task.completed = downloaded;
       _emit();
 
@@ -73,9 +79,11 @@ class Mp4Worker extends BaseWorker<M3u8Task> {
         if (!await dst.exists()) {
           await part.rename(outPath);
         } else {
-          // 如果 out 已有，part 也可能存在，清理一下
+          // 如果 out 已存在，part 也可能残留，先一起清理
           if (await part.exists()) {
-            try { await part.delete(); } catch (_) {}
+            try {
+              await part.delete();
+            } catch (_) {}
           }
         }
 
@@ -89,24 +97,28 @@ class Mp4Worker extends BaseWorker<M3u8Task> {
         return;
       }
 
-      // 4) Range 续传下载（兼容服务端忽略 Range 返回 200）
+      // 4) 使用 Range 做续传下载，同时兼容服务端忽略 Range 直接返回 200
       _token = CancelToken();
       final resp = await _downloadStream(downloaded);
 
-      // 已有 partial 且服务端不返回 206，说明无法续传：回退为从头下载，避免 append 产物损坏
+      // 已有 partial 但服务端不返回 206，说明无法续传：回退为从头下载，避免 append 导致产物损坏
       if (downloaded > 0 && resp.statusCode == 200) {
         if (await part.exists()) {
-          try { await part.delete(); } catch (_) {}
+          try {
+            await part.delete();
+          } catch (_) {}
         }
         downloaded = 0;
         task.downloaded = 0;
         task.completed = 0;
         _emit();
       } else if (downloaded > 0 && resp.statusCode != 206) {
-        throw StateError('range resume not supported: status=${resp.statusCode}');
+        throw StateError(
+            'range resume not supported: status=${resp.statusCode}');
       }
 
-      final sink = part.openWrite(mode: downloaded > 0 ? FileMode.append : FileMode.write);
+      final sink = part.openWrite(
+          mode: downloaded > 0 ? FileMode.append : FileMode.write);
       try {
         final stream = resp.data!.stream;
         await for (final data in stream) {
@@ -115,7 +127,7 @@ class Mp4Worker extends BaseWorker<M3u8Task> {
 
           downloaded += data.length;
           task.downloaded = downloaded;
-          task.completed = downloaded; // 统一：bytes 进度
+          task.completed = downloaded; // 统一使用字节进度
           _emit();
         }
       } finally {
@@ -136,13 +148,15 @@ class Mp4Worker extends BaseWorker<M3u8Task> {
       // 5) 完成：改名
       final shouldComplete =
           (task.contentLength != null && downloaded >= task.contentLength!) ||
-          (task.contentLength == null && downloaded > 0);
+              (task.contentLength == null && downloaded > 0);
 
       if (shouldComplete) {
         final out = File(outPath);
         if (await out.exists()) {
           // 有可能之前就存在，先删掉再覆盖
-          try { await out.delete(); } catch (_) {}
+          try {
+            await out.delete();
+          } catch (_) {}
         }
         await File(partPath).rename(outPath);
 

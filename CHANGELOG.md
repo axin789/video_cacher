@@ -1,3 +1,8 @@
+## 0.0.5
+
+- 将 README、测试清单和核心代码注释统一调整为中文。
+- 补充并整理下载、刷新地址、相册复制等能力说明。
+
 ## 0.0.4
 
 - improve example app structure by splitting pages and widgets into separate files

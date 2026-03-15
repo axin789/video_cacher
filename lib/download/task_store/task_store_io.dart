@@ -35,7 +35,8 @@ class TaskStoreSqlite implements TaskStore {
     for (final row in rs) {
       try {
         final id = row['id'] as String;
-        final map = jsonDecode(row['payload'] as String) as Map<String, dynamic>;
+        final map =
+            jsonDecode(row['payload'] as String) as Map<String, dynamic>;
         out[id] = _fromJson(map);
       } catch (_) {}
     }
@@ -45,7 +46,8 @@ class TaskStoreSqlite implements TaskStore {
   @override
   Future<void> saveTasks(Map<String, M3u8Task> tasks) async {
     _db.execute('DELETE FROM tasks');
-    final stmt = _db.prepare('INSERT OR REPLACE INTO tasks (id, payload, updated_at) VALUES (?, ?, ?)');
+    final stmt = _db.prepare(
+        'INSERT OR REPLACE INTO tasks (id, payload, updated_at) VALUES (?, ?, ?)');
     final now = DateTime.now().millisecondsSinceEpoch;
     for (final e in tasks.entries) {
       stmt.execute([e.key, jsonEncode(_toJson(e.value)), now]);
@@ -55,8 +57,13 @@ class TaskStoreSqlite implements TaskStore {
 
   @override
   Future<void> upsertTask(M3u8Task task) async {
-    final stmt = _db.prepare('INSERT OR REPLACE INTO tasks (id, payload, updated_at) VALUES (?, ?, ?)');
-    stmt.execute([task.taskId, jsonEncode(_toJson(task)), DateTime.now().millisecondsSinceEpoch]);
+    final stmt = _db.prepare(
+        'INSERT OR REPLACE INTO tasks (id, payload, updated_at) VALUES (?, ?, ?)');
+    stmt.execute([
+      task.taskId,
+      jsonEncode(_toJson(task)),
+      DateTime.now().millisecondsSinceEpoch
+    ]);
     stmt.dispose();
   }
 
@@ -71,7 +78,8 @@ class TaskStoreSqlite implements TaskStore {
       'dir': t.dir,
       'status': t.status.name,
       'completed': t.completed,
-      'persistedTotal': (t.segments.isNotEmpty ? t.segments.length : (t.persistedTotal ?? 0)),
+      'persistedTotal':
+          (t.segments.isNotEmpty ? t.segments.length : (t.persistedTotal ?? 0)),
       'error': t.error,
       'kind': t.kind.name,
       'contentLength': t.contentLength,

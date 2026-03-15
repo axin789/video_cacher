@@ -19,10 +19,10 @@ class DownloadScheduler {
 
   final FutureOr<void> Function(M3u8Task)? onTaskUpdate;
 
-  /// HLS 后处理注入（Android remux / iOS remux 或 proxy）
+  /// HLS 后处理器注入（Android remux / iOS remux 或代理播放）
   final PostProcessor postProcessor;
 
-  /// 外部注入：URL 失效时通过业务 id 刷新下载地址
+  /// 外部注入：URL 失效时，按业务 id 刷新下载地址
   DownloadRefreshUrl? refreshUrl;
 
   final Queue<M3u8Task> _queue = Queue();

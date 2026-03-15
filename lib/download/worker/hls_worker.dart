@@ -52,7 +52,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
   final M3u8Task task;
   final int segConcurrency;
 
-  /// Android/iOS PostProcessor，从外部注入
+  /// Android/iOS 后处理器，由外部注入
   final PostProcessor postProcessor;
 
   final void Function(M3u8Task)? onProgress;
@@ -65,7 +65,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
 
   int _seqBase = 0;
 
-  /// 下载 key 也要能 cancel
+  /// key 文件下载也要支持取消
   CancelToken? _keyToken;
 
   Future<void>? _refreshingUrls;
@@ -83,14 +83,14 @@ class HlsWorker extends BaseWorker<M3u8Task> {
   }
 
   Future<bool> _isDownloadReady() async {
-    // 1) local.m3u8 存在
+    // 1) local.m3u8 文件存在
     final m3u8File = File(p.join(task.dir, 'local.m3u8'));
     if (!await m3u8File.exists()) return false;
 
-    // 2) segments 为空（从 store 恢复的任务），认为已下载完成（更严谨你可扫目录）
+    // 2) segments 为空（通常是从 store 恢复的任务），认为下载阶段已完成
     if (task.segments.isEmpty) return true;
 
-    // 3) segments 全 done
+    // 3) 所有分片都已完成
     return task.segments.every((s) => s.done);
   }
 
@@ -100,18 +100,18 @@ class HlsWorker extends BaseWorker<M3u8Task> {
     try {
       await Directory(task.dir).create(recursive: true);
 
-      // 如果已下载完成，直接进入 postProcessing
+      // 如果下载阶段已经完成，直接进入后处理
       if (await _isDownloadReady()) {
         final m3u8Path = p.join(task.dir, 'local.m3u8');
         task.hlsLocalM3u8Path = m3u8Path;
-        task.localPath = m3u8Path; // 未 remux 前，可先用 m3u8 播放（iOS 走代理）
+        task.localPath = m3u8Path; // remux 前可先播放本地 m3u8（iOS 走代理）
         onProgress?.call(task);
 
         await _doPostProcess(m3u8Path);
         return;
       }
 
-      // ---------- parse ----------
+      // ---------- 解析 m3u8 ----------
       final hls = HlsParserService(dio);
       final parsed = await _parseWithRefresh(hls);
 
@@ -123,7 +123,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
 
       onProgress?.call(task);
 
-      // ---------- download key ----------
+      // ---------- 下载 key ----------
       if (_paused || _canceled) {
         _finishByControl();
         return;
@@ -136,7 +136,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
         }
       }
 
-      // ---------- download segments ----------
+      // ---------- 下载分片 ----------
       if (_paused || _canceled) {
         _finishByControl();
         return;
@@ -154,7 +154,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
         return;
       }
 
-      // 关键一致性校验：分片不完整时直接失败，避免写出坏 m3u8 并进入后处理
+      // 关键一致性校验：分片不完整时直接失败，避免写出损坏的 m3u8 并继续后处理
       if (!task.segments.every((s) => s.done)) {
         task.status = TaskStatus.failed;
         task.error = 'segment download incomplete';
@@ -162,10 +162,10 @@ class HlsWorker extends BaseWorker<M3u8Task> {
         return;
       }
 
-      // ---------- write local m3u8 ----------
+      // ---------- 写入本地 m3u8 ----------
       final m3u8Path = await _writeLocalM3u8();
       task.hlsLocalM3u8Path = m3u8Path;
-      task.localPath = m3u8Path; // remux 前先可播放
+      task.localPath = m3u8Path; // remux 前可先播放本地 m3u8
       onProgress?.call(task);
 
       if (_paused || _canceled) {
@@ -173,7 +173,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
         return;
       }
 
-      // ---------- post process ----------
+      // ---------- 执行后处理 ----------
       await _doPostProcess(m3u8Path);
     } catch (e) {
       task.status = TaskStatus.failed;
@@ -194,26 +194,30 @@ class HlsWorker extends BaseWorker<M3u8Task> {
     try {
       final tmpFile = File(tmpOutMp4);
       if (await tmpFile.exists()) {
-        try { await tmpFile.delete(); } catch (_) {}
+        try {
+          await tmpFile.delete();
+        } catch (_) {}
       }
 
       final r = await postProcessor
           .run(
-            inM3u8: m3u8Path,
-            outMp4: tmpOutMp4,
-            task: task,
-            onBytes: (bytes) {
-              task.remuxBytes = bytes;
-              onProgress?.call(task);
-            },
-          )
+        inM3u8: m3u8Path,
+        outMp4: tmpOutMp4,
+        task: task,
+        onBytes: (bytes) {
+          task.remuxBytes = bytes;
+          onProgress?.call(task);
+        },
+      )
           .timeout(const Duration(minutes: 20), onTimeout: () {
-            return PostProcessResult(ret: -9901, outMp4: tmpOutMp4);
-          });
+        return PostProcessResult(ret: -9901, outMp4: tmpOutMp4);
+      });
 
       if (_paused || _canceled) {
-        // 最小改动实现“强取消语义”：取消后即使 native 返回成功，也不产出最终 mp4
-        try { if (await tmpFile.exists()) await tmpFile.delete(); } catch (_) {}
+        // 尽量保证“强取消”语义：取消后即使 native 返回成功，也不产出最终 mp4
+        try {
+          if (await tmpFile.exists()) await tmpFile.delete();
+        } catch (_) {}
         _finishByControl();
         return;
       }
@@ -236,18 +240,20 @@ class HlsWorker extends BaseWorker<M3u8Task> {
 
         final finalFile = File(finalOutMp4);
         if (await finalFile.exists()) {
-          try { await finalFile.delete(); } catch (_) {}
+          try {
+            await finalFile.delete();
+          } catch (_) {}
         }
         await produced.rename(finalOutMp4);
 
-        //统一产物字段
+        // 统一最终产物字段
         task.mp4Path = finalOutMp4;
         task.localPath = finalOutMp4;
         task.status = TaskStatus.completed;
         task.error = null;
         onProgress?.call(task);
 
-        // 只在成功时清理 ts/key/m3u8（保留 mp4）
+        // 只在成功时清理 ts/key/m3u8，保留最终 mp4
         await postProcessor.cleanup(
           task: task,
           inM3u8: m3u8Path,
@@ -259,7 +265,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
         return;
       }
 
-      // 失败：不清理，保留 ts 等待重试
+      // 失败时不清理，保留 ts 等待后续重试
       task.status = TaskStatus.failed;
       task.error = 'postProcess ret=${r.ret}';
       onProgress?.call(task);
@@ -347,7 +353,8 @@ class HlsWorker extends BaseWorker<M3u8Task> {
     final parsed = await hls.parseFromEntryUrl(task.url);
 
     if (parsed.segments.length != task.segments.length) {
-      throw StateError('playlist segment count changed: old=${task.segments.length}, new=${parsed.segments.length}');
+      throw StateError(
+          'playlist segment count changed: old=${task.segments.length}, new=${parsed.segments.length}');
     }
 
     for (var i = 0; i < task.segments.length; i++) {
@@ -389,7 +396,7 @@ class HlsWorker extends BaseWorker<M3u8Task> {
       } catch (e) {
         if (e is DioException && e.type == DioExceptionType.cancel) return;
 
-        // 断网/连接异常：快速失败，避免长时间卡在 running
+        // 断网或连接异常时快速失败，避免长时间卡在 running
         if (e is DioException && _isNetworkDownError(e)) {
           throw StateError('network unavailable');
         }
@@ -401,7 +408,8 @@ class HlsWorker extends BaseWorker<M3u8Task> {
         if (++seg.retry > maxRetry) {
           throw StateError('segment failed: ${seg.remoteUri}');
         }
-        await Future.delayed(Duration(seconds: 1 << (seg.retry - 1))); // 1,2,4s
+        await Future.delayed(
+            Duration(seconds: 1 << (seg.retry - 1))); // 退避 1、2、4 秒
       }
     }
   }
@@ -421,12 +429,15 @@ class HlsWorker extends BaseWorker<M3u8Task> {
 
     final key = task.key;
     if (key?.localName != null) {
-      final method = (key?.method?.trim().isNotEmpty ?? false) ? key!.method!.trim() : 'AES-128';
+      final method = (key?.method?.trim().isNotEmpty ?? false)
+          ? key!.method!.trim()
+          : 'AES-128';
 
       String ivPart = '';
       final iv = key?.ivHex?.trim();
       if (iv != null && iv.isNotEmpty) {
-        final fixedIv = (iv.startsWith('0x') || iv.startsWith('0X')) ? iv : '0x$iv';
+        final fixedIv =
+            (iv.startsWith('0x') || iv.startsWith('0X')) ? iv : '0x$iv';
         ivPart = ',IV=$fixedIv';
       }
 
@@ -459,11 +470,11 @@ class HlsWorker extends BaseWorker<M3u8Task> {
   void pause() {
     _paused = true;
 
-    // cancel key
+    // 取消 key 下载
     _keyToken?.cancel('paused');
     _keyToken = null;
 
-    // cancel segments
+    // 取消分片下载
     for (final s in task.segments) {
       s.token?.cancel('paused');
     }

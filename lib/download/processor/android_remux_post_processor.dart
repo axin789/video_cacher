@@ -14,7 +14,7 @@ class AndroidRemuxPostProcessor implements PostProcessor {
     required M3u8Task task,
     void Function(int bytes)? onBytes,
   }) async {
-    // 监听 remux bytes
+    // 监听 remux 字节进度
     final sub = FfmpegRemux.progressStream.listen((p) {
       if (p.output == outMp4 && p.state == 'running') {
         onBytes?.call(p.bytes);
@@ -38,8 +38,8 @@ class AndroidRemuxPostProcessor implements PostProcessor {
   }) async {
     if (!success) return;
 
-    // 成功后：删除 ts/key/local.m3u8，仅保留 mp4
-    // 也可以只删 task.dir 里除了 mp4 的文件
+    // 成功后删除 ts/key/local.m3u8，仅保留 mp4
+    // 也可以改成只删除 task.dir 中除 mp4 之外的文件
     final dir = Directory(task.dir);
     if (!await dir.exists()) return;
 
@@ -47,7 +47,9 @@ class AndroidRemuxPostProcessor implements PostProcessor {
       final name = p.basename(e.path);
       if (outMp4 != null && e.path == outMp4) continue;
       if (name.endsWith('.mp4')) continue;
-      try { await e.delete(recursive: true); } catch (_) {}
+      try {
+        await e.delete(recursive: true);
+      } catch (_) {}
     }
   }
 

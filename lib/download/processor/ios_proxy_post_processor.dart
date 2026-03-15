@@ -20,10 +20,9 @@ class IosProxyPostProcessor implements PostProcessor {
     required String? outMp4,
     required bool success,
   }) async {
-    // iOS 一般不清理，因为要代理播放
+    // iOS 通常不清理这些文件，因为还要走本地代理播放
   }
 
   @override
-  void cancel(M3u8Task task) {
-  }
+  void cancel(M3u8Task task) {}
 }

@@ -1,9 +1,6 @@
-
-
 import '../download_library.dart';
 
 abstract class TaskStore {
-
   Future<void> saveTasks(Map<String, M3u8Task> tasks);
 
   Future<Map<String, M3u8Task>> loadTasks();

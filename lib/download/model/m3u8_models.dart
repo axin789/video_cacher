@@ -1,6 +1,14 @@
 import 'package:dio/dio.dart';
 
-enum TaskStatus { queued, running, paused, completed, failed, canceled, postProcessing }
+enum TaskStatus {
+  queued,
+  running,
+  paused,
+  completed,
+  failed,
+  canceled,
+  postProcessing
+}
 
 enum SourceKind { hls, mp4 }
 
@@ -13,7 +21,13 @@ class Segment {
   CancelToken? token;
   int duration;
 
-  Segment({required this.index, required this.remoteUri, required this.localName, this.done = false, this.retry = 0, this.duration = 0});
+  Segment(
+      {required this.index,
+      required this.remoteUri,
+      required this.localName,
+      this.done = false,
+      this.retry = 0,
+      this.duration = 0});
 }
 
 class KeyInfo {
@@ -24,7 +38,7 @@ class KeyInfo {
 }
 
 class M3u8Task {
-  // 业务唯一ID(用作任务目录名/持久化key)
+  // 业务唯一 ID（用作任务目录名和持久化 key）
   final String taskId;
 
   // 用于重新下载的参数
@@ -40,14 +54,14 @@ class M3u8Task {
 
   SourceKind kind;
 
-  // ============ HLS 专用 ============
+  // ============ HLS 专用字段 ============
   List<Segment> segments;
   KeyInfo? key;
 
   /// 下载完成后写出来的本地 m3u8 绝对路径（一般是 local.m3u8）
   String? hlsLocalM3u8Path;
 
-  // ============ MP4 / 通用产物 ============
+  // ============ MP4 / 通用产物字段 ============
   /// App 内播放的入口（最终建议这里：HLS 成功 remux 后也写成 mp4Path）
   String? localPath;
 
@@ -56,22 +70,22 @@ class M3u8Task {
 
   /// 是否已经保存过系统相册（防重复）
   bool albumSaved;
+
   /// 是否自动保存到系统相册（可由 UI 创建任务时传入）
   bool saveToAlbum;
-
 
   /// 保存相册失败原因（不会影响任务 completed）
   String? albumError;
 
   // ============ MP4 下载专用 ============
-  int? contentLength; //总大小(字节)
-  int downloaded;     //已下载(字节)
+  int? contentLength; // 总大小（字节）
+  int downloaded; // 已下载（字节）
   String? eTag;
   String? tmpPath;
 
   // ============ 公共 ============
   TaskStatus status;
-  int completed;          // HLS: 已完成分片数；MP4: 可用于“已下载 bytes”
+  int completed; // HLS：已完成分片数；MP4：已下载字节数
   String? error;
   int? persistedTotal;
 
@@ -98,27 +112,27 @@ class M3u8Task {
     this.persistedTotal,
     this.error,
 
-    // hls
+    // HLS 相关字段
     required this.segments,
     required this.key,
     this.hlsLocalM3u8Path,
 
-    // mp4
+    // MP4 相关字段
     this.contentLength,
     this.downloaded = 0,
     this.eTag,
     this.tmpPath,
 
-    // output
+    // 输出产物字段
     this.localPath,
     this.mp4Path,
 
-    // album
+    // 相册相关字段
     this.albumSaved = false,
     this.saveToAlbum = true,
     this.albumError,
 
-    // extras
+    // 其它扩展字段
     this.remuxBytes = 0,
     this.postAttempts = 0,
   });
@@ -151,10 +165,10 @@ class M3u8Task {
     );
   }
 
-  // 运行时计算:当前m3u8的总分片数(已解析则为segments.length)
+  // 运行时计算：当前 m3u8 的总分片数（已解析时等于 segments.length）
   int get total => segments.length;
 
-  // UI 渲染用：解析前使用快照总数
+  // 给 UI 渲染使用：解析前展示快照总数
   int get effectiveTotal {
     if (kind == SourceKind.hls) {
       return total > 0 ? total : (persistedTotal ?? 0);
@@ -164,11 +178,12 @@ class M3u8Task {
   }
 
   bool get isFinished => status == TaskStatus.completed;
-  bool get isActive => status == TaskStatus.running || status == TaskStatus.queued;
+  bool get isActive =>
+      status == TaskStatus.running || status == TaskStatus.queued;
 
   /// 是否已经有可播放产物（本地 mp4 或本地 m3u8）
   bool get hasPlayableLocal =>
       (localPath != null && localPath!.isNotEmpty) ||
-          (mp4Path != null && mp4Path!.isNotEmpty) ||
-          (hlsLocalM3u8Path != null && hlsLocalM3u8Path!.isNotEmpty);
+      (mp4Path != null && mp4Path!.isNotEmpty) ||
+      (hlsLocalM3u8Path != null && hlsLocalM3u8Path!.isNotEmpty);
 }

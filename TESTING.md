@@ -1,70 +1,70 @@
-# Testing checklist
+# 测试检查清单
 
-Use this checklist after integrating real test data.
+接入真实测试数据后，可以按下面清单验证。
 
-## A. Base setup
+## A. 基础环境
 
-- [ ] Flutter version is 3.27.4
-- [ ] `flutter pub get` succeeds
-- [ ] `flutter analyze` succeeds (main + example)
+- [ ] Flutter 版本为 3.27.4
+- [ ] `flutter pub get` 执行成功
+- [ ] `flutter analyze` 执行成功（主包和 example 都通过）
 
-## B. MP4 flow
+## B. MP4 流程
 
-- [ ] Enqueue MP4 URL task with `id/name/url`
-- [ ] Progress updates as bytes downloaded
-- [ ] Pause -> resume works
-- [ ] Cancel works and task becomes canceled
-- [ ] Completed task has valid `localPath/mp4Path`
+- [ ] 使用 `id/name/url` 创建 MP4 下载任务
+- [ ] 下载过程中进度会按已下载字节更新
+- [ ] 暂停后可以继续
+- [ ] 取消后任务状态变为 canceled
+- [ ] 下载完成后 `localPath/mp4Path` 有效
 
-## C. HLS flow
+## C. HLS 流程
 
-- [ ] Enqueue m3u8 URL task
-- [ ] Segment progress updates
-- [ ] Post-process runs and outputs final mp4
-- [ ] Final task status is completed
+- [ ] 创建 m3u8 下载任务
+- [ ] 分片下载进度正常更新
+- [ ] 后处理正常执行并输出最终 mp4
+- [ ] 最终任务状态为 completed
 
-## D. URL expiration recovery
+## D. URL 过期恢复
 
 ### D1 MP4
-- [ ] MP4 URL expires (404/410) during HEAD -> callback refreshes -> continues
-- [ ] MP4 URL expires during stream GET -> callback refreshes -> continues
+- [ ] MP4 地址在 HEAD 阶段过期（404/410）后，回调刷新地址并继续下载
+- [ ] MP4 地址在 GET 流阶段过期后，回调刷新地址并继续下载
 
 ### D2 HLS
-- [ ] Entry m3u8 404/410 -> refreshes and continues
-- [ ] Key URL 404/410 -> refreshes and continues
-- [ ] TS URL 404/410 -> refreshes and continues
+- [ ] 入口 m3u8 返回 404/410 后，可以刷新并继续
+- [ ] key 地址返回 404/410 后，可以刷新并继续
+- [ ] ts 地址返回 404/410 后，可以刷新并继续
 
-## E. Cancel semantics during remux
+## E. remux 过程中的取消语义
 
-- [ ] Start HLS remux
-- [ ] Cancel during remux
-- [ ] Task status becomes canceled
-- [ ] No final output mp4 is produced
-- [ ] Temp remux file is cleaned
+- [ ] 启动 HLS remux
+- [ ] remux 过程中执行取消
+- [ ] 任务状态变为 canceled
+- [ ] 不产出最终 mp4
+- [ ] 临时 remux 文件会被清理
 
-## F. Album copy
+## F. 复制到相册
 
-- [ ] `copyToAlbum(taskId)` success path
-- [ ] `copyPathToAlbum(path)` success path
-- [ ] Permission denied path returns failure cleanly
+- [ ] `copyToAlbum(taskId)` 成功路径正常
+- [ ] `copyPathToAlbum(path)` 成功路径正常
+- [ ] 权限拒绝时能明确返回失败原因
 
-## G. Persistence
+## G. 持久化恢复
 
-- [ ] Kill app during download and reopen
-- [ ] Task restores from SQLite
-- [ ] Unfinished task becomes `paused` after reopen
-- [ ] User taps continue and resume continues from breakpoint
+- [ ] 下载过程中杀掉 app 后重新打开
+- [ ] 任务能从 SQLite 恢复
+- [ ] 未完成任务在重启后变成 `paused`
+- [ ] 用户点击继续后，任务能从断点恢复
 
 ---
 
-## Test data template
+## 测试数据模板
 
-Provide a table like below for validation run:
+验证时可以整理成下面这样的表：
 
 | caseId | type | id | initialUrl | expected |
 |---|---|---|---|---|
-| 1 | mp4 | v1001 | ... | normal complete |
-| 2 | m3u8 | v1002 | ... | normal complete |
-| 3 | mp4-expire | v1003 | ... | refresh and continue |
-| 4 | hls-ts-expire | v1004 | ... | refresh and continue |
-| 5 | hls-cancel-remux | v1005 | ... | canceled, no final mp4 |
+| 1 | mp4 | v1001 | ... | 正常完成 |
+| 2 | m3u8 | v1002 | ... | 正常完成 |
+| 3 | mp4-expire | v1003 | ... | 刷新后继续 |
+| 4 | hls-ts-expire | v1004 | ... | 刷新后继续 |
+| 5 | hls-cancel-remux | v1005 | ... | 已取消且没有最终 mp4 |

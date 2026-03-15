@@ -1,52 +1,52 @@
 # ffmpeg_remux
 
-A Flutter plugin for:
+一个用于 Flutter 的离线视频缓存插件，主要能力包括：
 
-- downloading `mp4` and `m3u8` sources
-- persisting download tasks in SQLite
-- refreshing expired URLs through a business callback
-- remuxing downloaded HLS content into local `mp4`
-- copying the final `mp4` into the system album
+- 下载 `mp4` 和 `m3u8`
+- 使用 SQLite 持久化下载任务
+- 通过业务回调刷新过期下载地址
+- 将 HLS 内容转封装为本地 `mp4`
+- 把最终 `mp4` 复制到系统相册
 
-This package is designed for apps that need offline video caching with resumable downloads and HLS-to-MP4 output.
+适合需要断点续传、离线缓存、HLS 转 MP4 的移动端场景。
 
-## Features
+## 功能特性
 
-- Supports both `mp4` and `m3u8`
-- Automatically detects source type
-- Persists tasks locally
-- Supports pause / manual resume / delete
-- Supports custom URL refresh logic through `setRefreshUrl`
-- Supports manual album copy and auto-copy after completion
-- Exposes task stream for download list UI
+- 同时支持 `mp4` 和 `m3u8`
+- 自动识别资源类型
+- 本地持久化任务列表
+- 支持暂停、手动继续、删除
+- 支持通过 `setRefreshUrl` 自定义刷新下载地址
+- 支持手动复制到相册和下载完成后自动复制
+- 通过任务流把状态变化抛给下载列表 UI
 
-## Platform Support
+## 平台支持
 
-- Android: supported
-- iOS: supported
-- macOS: plugin target exists, but the main use case is mobile
-- Web: empty implementation for compilation only
+- Android：支持
+- iOS：支持
+- macOS：有插件目标，但主要使用场景仍是移动端
+- Web：仅提供空实现，保证编译通过
 
-## Installation
+## 安装
 
-Add dependency:
+在 `pubspec.yaml` 中添加依赖：
 
 ```yaml
 dependencies:
-  ffmpeg_remux: ^0.0.3
+  ffmpeg_remux: ^0.0.5
 ```
 
-Then run:
+然后执行：
 
 ```bash
 flutter pub get
 ```
 
-## Permissions
+## 权限说明
 
 ### Android
 
-Add these permissions in your app `AndroidManifest.xml` when using album copy:
+如果需要复制到相册，请在业务工程的 `AndroidManifest.xml` 中添加这些权限：
 
 ```xml
 <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
@@ -54,7 +54,7 @@ Add these permissions in your app `AndroidManifest.xml` when using album copy:
 <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
 ```
 
-If your app depends on this plugin module directly, align your example/app project with the plugin Android requirements:
+如果你的工程直接依赖这个插件模块，请让业务工程的 Android 配置和插件要求保持一致：
 
 - `compileSdk = 36`
 - `ndkVersion = "27.0.12077973"`
@@ -62,25 +62,25 @@ If your app depends on this plugin module directly, align your example/app proje
 
 ### iOS
 
-Add these keys to `Info.plist` when using album copy:
+如果需要复制到相册，请在 `Info.plist` 中添加：
 
 ```xml
 <key>NSPhotoLibraryAddUsageDescription</key>
-<string>Need to save exported videos into the system album.</string>
+<string>需要把导出的视频保存到系统相册。</string>
 <key>NSPhotoLibraryUsageDescription</key>
-<string>Need photo library access to save and view exported videos.</string>
+<string>需要访问相册以保存和查看导出的视频。</string>
 ```
 
-## Quick Start
+## 快速开始
 
-### 1. Initialize
+### 1. 初始化
 
 ```dart
 final mgr = DownloadManager.instance;
 
 mgr.setRefreshUrl((id) async {
-  // Query your backend with business id and return the latest playable URL.
-  // Example:
+  // 根据业务 id 向你自己的后端查询最新可下载地址。
+  // 例如：
   // final result = await api.fetchLatestPlayUrl(id);
   // return result.url;
   throw UnimplementedError();
@@ -90,19 +90,19 @@ await mgr.ensureInitialized();
 await mgr.setMaxConcurrency(3);
 ```
 
-### 2. Create a task
+### 2. 创建任务
 
 ```dart
 final task = await mgr.enqueue(
   id: 'video_1001',
-  name: 'Episode 1',
+  name: '第 1 集',
   cover: 'https://example.com/cover.jpg',
   url: 'https://example.com/play.m3u8',
   saveToAlbum: false,
 );
 ```
 
-### 3. Observe task updates
+### 3. 监听任务变化
 
 ```dart
 final sub = mgr.taskStream.listen((task) {
@@ -115,7 +115,7 @@ final sub = mgr.taskStream.listen((task) {
 });
 ```
 
-### 4. Controls
+### 4. 常用控制
 
 ```dart
 mgr.pause(task.taskId);
@@ -124,14 +124,14 @@ await mgr.retryFailedTaskById(task.taskId);
 await mgr.deleteTaskById(task.taskId);
 ```
 
-### 5. Copy to album
+### 5. 复制到相册
 
 ```dart
 final result = await mgr.copyToAlbumWithResult(task.taskId);
 print('ok=${result.ok}, error=${result.error}');
 ```
 
-Or copy by local path:
+也可以直接按本地路径复制：
 
 ```dart
 final result = await mgr.copyPathToAlbumWithResult(
@@ -140,7 +140,7 @@ final result = await mgr.copyPathToAlbumWithResult(
 );
 ```
 
-## API Summary
+## API 概览
 
 ### DownloadManager
 
@@ -159,9 +159,9 @@ final result = await mgr.copyPathToAlbumWithResult(
 - `taskStream`
 - `tasks`
 
-### Task Status
+### 任务状态
 
-Current task states:
+当前支持的任务状态：
 
 - `queued`
 - `running`
@@ -171,26 +171,26 @@ Current task states:
 - `canceled`
 - `postProcessing`
 
-## URL Refresh Contract
+## URL 刷新约定
 
-`setRefreshUrl` is used in two places:
+`setRefreshUrl` 会在两个场景触发：
 
-- when a download hits expired resource errors such as `404` / `410`
-- when a failed task is retried manually
+- 下载过程中遇到 `404` / `410` 这类资源过期错误时
+- 失败任务被手动重试时
 
-The callback receives the current `taskId`:
+回调参数是当前任务的 `taskId`：
 
 ```dart
 Future<String> refreshUrl(String id)
 ```
 
-Expected behavior:
+建议满足这些约定：
 
-- return a full playable `mp4` or `m3u8` URL
-- return non-empty string
-- for HLS, keep playlist structure stable enough for resume
+- 返回完整可下载的 `mp4` 或 `m3u8` 地址
+- 返回值不能为空
+- 如果是 HLS，刷新后的播放列表结构最好尽量稳定，便于续传
 
-Business example:
+业务接入示例：
 
 ```dart
 mgr.setRefreshUrl((id) async {
@@ -205,29 +205,29 @@ mgr.setRefreshUrl((id) async {
 });
 ```
 
-## Task Behavior
+## 任务行为
 
-### Same `id` behavior
+### 相同 `id` 的处理规则
 
-If the same `id` already exists:
+如果同一个 `id` 已经存在：
 
-- completed task: treat it as already downloaded
-- active/paused task: treat it as already in download list
-- failed task: allow retry, and the retry can refresh the internal URL
+- 已完成任务：视为已经下载过
+- 进行中或暂停中的任务：视为已经在下载列表中
+- 失败任务：允许重试，重试时可以刷新内部 URL
 
-### App restart behavior
+### App 重启后的行为
 
-Unfinished tasks are not auto-resumed on cold start.
+未完成任务在冷启动后不会自动继续下载。
 
-After app restart:
+App 重启后：
 
-- unfinished tasks are restored from SQLite
-- previous running tasks are converted to `paused`
-- user must manually tap `continue` from the download list
+- 未完成任务会从 SQLite 恢复
+- 之前处于运行中的任务会统一改成 `paused`
+- 需要用户手动在下载列表里点击继续
 
-## Album Copy Errors
+## 相册复制错误
 
-The package exposes detailed album copy result messages, such as:
+插件会返回更细的相册复制结果，例如：
 
 - `file not exists`
 - `file is empty`
@@ -235,28 +235,28 @@ The package exposes detailed album copy result messages, such as:
 - `saved asset not found`
 - `saveVideo exception: ...`
 
-Use `copyToAlbumWithResult` or `copyPathToAlbumWithResult` to surface those messages in UI.
+建议在 UI 中使用 `copyToAlbumWithResult` 或 `copyPathToAlbumWithResult` 直接展示这些信息。
 
-## Notes
+## 说明
 
-- Final playable output is usually `task.localPath` or `task.mp4Path`
-- HLS tasks are remuxed to MP4 after segment download completes
-- Failed-task retry should go through `setRefreshUrl` in real business integration
+- 最终可播放产物通常是 `task.localPath` 或 `task.mp4Path`
+- HLS 任务会在分片下载完成后继续转封装成 MP4
+- 失败任务的重试在真实业务里应走 `setRefreshUrl`
 
 ## Example
 
-See the example app under `example/lib/`:
+示例工程在 `example/lib/` 下，主要包含：
 
 - `pages/init_page.dart`
 - `pages/download_detail_page.dart`
 - `pages/download_list_page.dart`
 - `pages/video_player_page.dart`
 
-The example demonstrates:
+示例里演示了：
 
-- downloader initialization
-- task creation
-- list-based task management
-- manual resume / retry / delete
-- local video playback
-- album copy result handling
+- 下载器初始化
+- 创建任务
+- 基于列表的任务管理
+- 手动继续、重试、删除
+- 本地视频播放
+- 相册复制结果处理

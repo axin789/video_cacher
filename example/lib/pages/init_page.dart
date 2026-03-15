@@ -24,7 +24,6 @@ class _InitPageState extends State<InitPage> {
 
   Future<void> _initialize() async {
     _mgr.setRefreshUrl((id) async {
-      final task = _mgr.tasks[id];
       // 这里接入你自己的业务接口：
       // 1. 根据 taskId 查询最新可下载地址
       // 2. 返回最新的 mp4 或 m3u8 播放地址

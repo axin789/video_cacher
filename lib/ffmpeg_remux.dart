@@ -1,5 +1,3 @@
-
-
 import 'dart:async';
 import 'package:flutter/services.dart';
 
@@ -10,10 +8,10 @@ class RemuxResult {
 }
 
 class RemuxProgress {
-  final String state; // started/running/done/error/cancelled
+  final String state; // started/running/done/error/cancelled，表示当前任务状态
   final String? output;
   final int? ret;
-  final int bytes; // output file size bytes
+  final int bytes; // 输出文件大小，单位字节
   RemuxProgress({
     required this.state,
     required this.bytes,
@@ -63,4 +61,3 @@ class FfmpegRemux {
     return ok ?? false;
   }
 }
-

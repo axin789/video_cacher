@@ -2,11 +2,11 @@ import '../model/m3u8_models.dart';
 
 enum DownloadEventType {
   taskAdded,
-  taskUpdated,       // 任意字段更新（兜底）
-  statusChanged,     // status 变化
-  progress,          // completed/downloaded/remuxBytes 变化
-  finished,          // completed/failed/canceled
-  removed,           // deleteTaskById
+  taskUpdated, // 任意字段更新（兜底）
+  statusChanged, // status 变化
+  progress, // completed/downloaded/remuxBytes 变化
+  finished, // completed/failed/canceled
+  removed, // deleteTaskById
 }
 
 class DownloadEvent {
@@ -24,7 +24,7 @@ class DownloadEvent {
 
   bool get isFinished =>
       type == DownloadEventType.finished ||
-          task.status == TaskStatus.completed ||
-          task.status == TaskStatus.failed ||
-          task.status == TaskStatus.canceled;
+      task.status == TaskStatus.completed ||
+      task.status == TaskStatus.failed ||
+      task.status == TaskStatus.canceled;
 }

@@ -1,6 +1,6 @@
 name: ffmpeg_remux
-description: Flutter plugin for offline video caching with mp4 and m3u8 downloads, HLS remux to mp4, URL refresh, and album copy support.
-version: 0.0.4
+description: 用于离线视频缓存的 Flutter 插件，支持 mp4/m3u8 下载、HLS 转 mp4、地址刷新与相册复制。
+version: 0.0.5
 homepage: https://github.com/axin789/ffmpeg_remux
 repository: https://github.com/axin789/ffmpeg_remux
 issue_tracker: https://github.com/axin789/ffmpeg_remux/issues

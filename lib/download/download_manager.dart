@@ -39,7 +39,7 @@ class DownloadManager {
   /// 防止同一个任务“同时触发多次保存相册”
   final Set<String> _albumSaving = {};
 
-  /// 业务方注入：URL 失效(404)时按 id 刷新下载链接
+  /// 业务方注入：URL 失效（如 404）时按 id 刷新下载地址
   void setRefreshUrl(RefreshUrl? fn) {
     _refreshUrl = fn;
     if (_inited) {
@@ -77,11 +77,11 @@ class DownloadManager {
       onTaskUpdate: (t) async {
         _tasks[t.taskId] = t;
 
-        // 只 upsert 单条，避免频繁全量写
+        // 只增量更新单条任务，避免频繁全量写入
         await store.upsertTask(t);
         _controller.add(t);
 
-        // 下载/转换完成后自动保存相册（HLS+MP4 都走这里）
+        // 下载或转换完成后自动保存到相册（HLS 和 MP4 都走这里）
         if (t.saveToAlbum) {
           await _autoSaveToAlbumIfNeeded(t);
         }
@@ -93,7 +93,7 @@ class DownloadManager {
     _tasks.addAll(restored);
 
     // 进程被杀后，持久化中的运行态已不可信。
-    // 冷启动时统一转成 paused，要求用户手动继续，避免偷偷自动续传。
+    // 冷启动时统一转成 paused，要求用户手动继续，避免静默自动续传
     for (final t in _tasks.values) {
       if (t.status == TaskStatus.running ||
           t.status == TaskStatus.queued ||
@@ -107,12 +107,12 @@ class DownloadManager {
   }
 
   Future<AlbumSaveResult> _autoSaveToAlbumIfNeeded(M3u8Task t) async {
-    // 只处理 completed
+    // 只处理 completed 状态
     if (t.status != TaskStatus.completed) {
       return const AlbumSaveResult(false, 'task not completed');
     }
 
-    // 必须有 mp4Path
+    // 必须已经有 mp4Path
     final mp4 = t.mp4Path;
     if (mp4 == null || mp4.isEmpty) {
       return const AlbumSaveResult(false, 'mp4 path is empty');
@@ -335,7 +335,7 @@ class DownloadManager {
     //  2) 持久化移除
     await store.deleteTask(taskId);
 
-    //  3) 主动通知 UI：发一个“已删除/已取消”的事件（你也可以自定义 TaskStatus.deleted）
+    // 3) 主动通知 UI：发出“已删除/已取消”事件（也可以自行扩展 TaskStatus.deleted）
     t.status = TaskStatus.canceled;
     _controller.add(t);
   }

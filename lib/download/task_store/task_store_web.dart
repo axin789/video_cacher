@@ -25,6 +25,7 @@ class TaskStoreWeb implements TaskStore {
     debugPrint('WEB不支持下载');
   }
 }
-Future<TaskStore> openTaskStore()async{
+
+Future<TaskStore> openTaskStore() async {
   return TaskStoreWeb();
 }
