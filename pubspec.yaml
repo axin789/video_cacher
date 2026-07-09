@@ -25,11 +25,6 @@ dependencies:
   dio: ^5.9.0
   path: ^1.9.0
   path_provider: ^2.1.5
-  flutter_hls_parser: ^2.0.1
-  sqlite3: ^2.7.6
-  sqlite3_flutter_libs: ^0.5.31
-  crypto: ^3.0.6
-  convert: ^3.1.2
   photo_manager: ^3.0.0
   pointycastle: ^4.0.0
 
