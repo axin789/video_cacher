@@ -1,4 +1,4 @@
-import 'package:ffmpeg_remux/download/download_library.dart';
+import 'package:ffmpeg_remux/ffmpeg_remux.dart';
 import 'package:flutter/material.dart';
 
 import 'download_list_page.dart';
@@ -65,12 +65,20 @@ class _DownloadDetailPageState extends State<DownloadDetailPage> {
           return;
         }
 
-        final retried = await _mgr.retryFailedTaskById(id, overrideUrl: url);
+        // TODO(phase1): 新 API 没有「带新 url 重试」的入口，这里用 删除+重新入队
+        // 等价实现，以便沿用用户新填的 url（会丢弃失败任务的断点分片，从头开始）。
+        await _mgr.deleteTask(id);
+        final task = await _mgr.enqueue(
+          id: id,
+          name: name,
+          cover: cover.isEmpty ? 'https://picsum.photos/300/420' : cover,
+          url: url,
+          saveToAlbum: _saveToAlbum,
+        );
         if (!mounted) return;
         setState(() {
           _submitting = false;
-          _resultText =
-              retried ? '失败任务已更新下载地址并重新开始: $id' : '失败任务重试失败，请检查新的 url';
+          _resultText = '失败任务已更新下载地址并重新开始: ${task.taskId}';
         });
         return;
       }

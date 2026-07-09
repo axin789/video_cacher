@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:ffmpeg_remux/download/download_library.dart';
+import 'package:ffmpeg_remux/ffmpeg_remux.dart';
 import 'package:flutter/material.dart';
 
 import '../widgets/mini_action_button.dart';
@@ -15,8 +15,8 @@ class DownloadListPage extends StatefulWidget {
 
 class _DownloadListPageState extends State<DownloadListPage> {
   final _mgr = DownloadManager.instance;
-  StreamSubscription<M3u8Task>? _sub;
-  List<M3u8Task> _tasks = const [];
+  StreamSubscription<TaskEvent>? _sub;
+  List<DownloadTask> _tasks = const [];
 
   @override
   void initState() {
@@ -53,7 +53,7 @@ class _DownloadListPageState extends State<DownloadListPage> {
         return 0;
       case TaskStatus.running:
       case TaskStatus.queued:
-      case TaskStatus.postProcessing:
+      case TaskStatus.remuxing:
         return 1;
       case TaskStatus.paused:
         return 2;
@@ -64,7 +64,7 @@ class _DownloadListPageState extends State<DownloadListPage> {
     }
   }
 
-  String _subtitleOf(M3u8Task task) {
+  String _subtitleOf(DownloadTask task) {
     if (task.error?.isNotEmpty == true) return task.error!;
     if (task.albumError?.isNotEmpty == true) return task.albumError!;
     switch (task.status) {
@@ -80,18 +80,19 @@ class _DownloadListPageState extends State<DownloadListPage> {
         return '下载失败';
       case TaskStatus.canceled:
         return '已取消';
-      case TaskStatus.postProcessing:
+      case TaskStatus.remuxing:
         return '处理中';
     }
   }
 
-  String _metaOf(M3u8Task task) {
+  String _metaOf(DownloadTask task) {
+    // HLS 下载中：totalBytes 是分片总数、downloadedBytes 是已完成分片数。
     if (task.kind == SourceKind.hls) {
-      return '分片 ${task.completed}/${task.effectiveTotal}';
+      return '分片 ${task.downloadedBytes}/${task.totalBytes}';
     }
-    final total = task.contentLength ?? 0;
-    if (total <= 0) return '已下载 ${task.downloaded} B';
-    return '${_bytes(task.downloaded)} / ${_bytes(total)}';
+    final total = task.totalBytes;
+    if (total <= 0) return '已下载 ${task.downloadedBytes} B';
+    return '${_bytes(task.downloadedBytes)} / ${_bytes(total)}';
   }
 
   String _bytes(int value) {
@@ -103,33 +104,21 @@ class _DownloadListPageState extends State<DownloadListPage> {
     return '${(value / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
 
-  double _progressOf(M3u8Task task) {
-    if (task.kind == SourceKind.hls) {
-      final total = task.effectiveTotal;
-      if (total <= 0) return 0;
-      return (task.completed / total).clamp(0, 1).toDouble();
-    }
-    final total = task.contentLength ?? 0;
-    if (total <= 0) return 0;
-    return (task.downloaded / total).clamp(0, 1).toDouble();
-  }
+  double _progressOf(DownloadTask task) => task.progress.toDouble();
 
-  Future<void> _resumeTask(M3u8Task task) async {
-    if (task.status == TaskStatus.failed) {
-      await _mgr.retryFailedTaskById(task.taskId);
-    } else {
-      _mgr.resumeById(task.taskId);
-    }
+  Future<void> _resumeTask(DownloadTask task) async {
+    // resume 同时覆盖 paused/failed/queued，失败任务也走它重试。
+    _mgr.resume(task.taskId);
     if (mounted) setState(_reloadTasks);
   }
 
-  Future<void> _deleteTask(M3u8Task task) async {
-    await _mgr.deleteTaskById(task.taskId);
+  Future<void> _deleteTask(DownloadTask task) async {
+    await _mgr.deleteTask(task.taskId);
     if (mounted) setState(_reloadTasks);
   }
 
-  Future<void> _copyToAlbum(M3u8Task task) async {
-    final result = await _mgr.copyToAlbumWithResult(task.taskId);
+  Future<void> _copyToAlbum(DownloadTask task) async {
+    final result = await _mgr.copyToAlbum(task.taskId);
     if (!mounted) return;
     setState(_reloadTasks);
     ScaffoldMessenger.of(context).showSnackBar(
@@ -141,7 +130,7 @@ class _DownloadListPageState extends State<DownloadListPage> {
     );
   }
 
-  void _showTaskDetail(M3u8Task task) {
+  void _showTaskDetail(DownloadTask task) {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF111111),
@@ -159,7 +148,6 @@ class _DownloadListPageState extends State<DownloadListPage> {
                 Text('taskId: ${task.taskId}'),
                 Text('status: ${task.status.name}'),
                 Text('mp4: ${task.mp4Path ?? '-'}', maxLines: 3),
-                Text('local: ${task.localPath ?? '-'}', maxLines: 3),
                 Text('albumError: ${task.albumError ?? '-'}', maxLines: 3),
               ],
             ),
@@ -169,10 +157,8 @@ class _DownloadListPageState extends State<DownloadListPage> {
     );
   }
 
-  void _openTask(M3u8Task task) {
-    final path = (task.localPath?.isNotEmpty ?? false)
-        ? task.localPath!
-        : (task.mp4Path ?? '');
+  void _openTask(DownloadTask task) {
+    final path = task.mp4Path ?? '';
     if (path.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('当前任务还没有可播放文件')),
@@ -225,7 +211,7 @@ class _DownloadListPageState extends State<DownloadListPage> {
               onResume: _resumeTask,
               onDelete: _deleteTask,
               onCopyToAlbum: _copyToAlbum,
-              onOpen: (task) => task.hasPlayableLocal
+              onOpen: (task) => (task.mp4Path?.isNotEmpty ?? false)
                   ? _openTask(task)
                   : _showTaskDetail(task),
             ),
@@ -238,7 +224,7 @@ class _DownloadListPageState extends State<DownloadListPage> {
               onResume: _resumeTask,
               onDelete: _deleteTask,
               onCopyToAlbum: _copyToAlbum,
-              onOpen: (task) => task.hasPlayableLocal
+              onOpen: (task) => (task.mp4Path?.isNotEmpty ?? false)
                   ? _openTask(task)
                   : _showTaskDetail(task),
             ),
@@ -263,15 +249,15 @@ class TaskListView extends StatelessWidget {
     required this.onOpen,
   });
 
-  final List<M3u8Task> tasks;
-  final String Function(M3u8Task task) subtitleOf;
-  final String Function(M3u8Task task) metaOf;
-  final double Function(M3u8Task task) progressOf;
-  final void Function(M3u8Task task) onPause;
-  final Future<void> Function(M3u8Task task) onResume;
-  final Future<void> Function(M3u8Task task) onDelete;
-  final Future<void> Function(M3u8Task task) onCopyToAlbum;
-  final void Function(M3u8Task task) onOpen;
+  final List<DownloadTask> tasks;
+  final String Function(DownloadTask task) subtitleOf;
+  final String Function(DownloadTask task) metaOf;
+  final double Function(DownloadTask task) progressOf;
+  final void Function(DownloadTask task) onPause;
+  final Future<void> Function(DownloadTask task) onResume;
+  final Future<void> Function(DownloadTask task) onDelete;
+  final Future<void> Function(DownloadTask task) onCopyToAlbum;
+  final void Function(DownloadTask task) onOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -320,7 +306,7 @@ class TaskCard extends StatelessWidget {
     required this.onOpen,
   });
 
-  final M3u8Task task;
+  final DownloadTask task;
   final String subtitle;
   final String meta;
   final double progress;
@@ -337,7 +323,7 @@ class TaskCard extends StatelessWidget {
     final isPaused = task.status == TaskStatus.paused;
     final isDownloading = task.status == TaskStatus.running ||
         task.status == TaskStatus.queued ||
-        task.status == TaskStatus.postProcessing;
+        task.status == TaskStatus.remuxing;
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -468,7 +454,9 @@ class TaskCard extends StatelessWidget {
                       minimumSize: const Size(82, 42),
                     ),
                     child: Text(
-                      isCompleted && task.hasPlayableLocal ? '播放' : '详情',
+                      isCompleted && (task.mp4Path?.isNotEmpty ?? false)
+                          ? '播放'
+                          : '详情',
                     ),
                   );
 

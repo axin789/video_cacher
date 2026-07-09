@@ -1,4 +1,4 @@
-import 'package:ffmpeg_remux/download/download_library.dart';
+import 'package:ffmpeg_remux/ffmpeg_remux.dart';
 import 'package:flutter/material.dart';
 
 import '../widgets/entry_button.dart';
