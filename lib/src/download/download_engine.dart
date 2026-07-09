@@ -160,6 +160,15 @@ class DownloadEngine {
   /// 把等待中的任务移到队首。
   void prioritize(String taskId) => _queue.prioritize(taskId);
 
+  /// 回写相册保存结果（仅更新 albumSaved/albumError，不动任务状态）。
+  /// 供门面的自动/手动存相册在保存完成后调用。
+  void setAlbumResult(String taskId, {required bool saved, String? error}) {
+    if (_disposed) return;
+    final task = _tasks[taskId];
+    if (task == null) return;
+    _commit(task.copyWith(albumSaved: saved, albumError: error));
+  }
+
   /// 调整并发上限（只更新闸门并泵，不重建引擎）。
   Future<void> setMaxConcurrency(int n) async {
     _queue.setMaxConcurrency(n < 1 ? 1 : n);

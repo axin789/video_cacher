@@ -1,0 +1,218 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:dio/dio.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+
+import '../album/album_saver.dart';
+import '../download/download_engine.dart';
+import '../download/hls/hls_downloader.dart';
+import '../download/http/http_client.dart';
+import '../download/http/url_refresher.dart';
+import '../download/mp4/mp4_downloader.dart';
+import '../download/source_detector.dart';
+import '../remux/ffmpeg_fallback/ffmpeg_remuxer.dart';
+import '../remux/remuxer.dart';
+import '../store/json_task_store.dart';
+import 'models/download_config.dart';
+import 'models/download_task.dart';
+import 'models/task_event.dart';
+import 'models/task_status.dart';
+
+/// 插件对外唯一门面（单例）。串起 HTTP → 下载 → remux → 存储 → 事件 全链路，
+/// 并在任务完成时自动存相册。
+class DownloadManager {
+  DownloadManager._();
+
+  static final DownloadManager instance = DownloadManager._();
+
+  bool _inited = false;
+
+  late Dio _dio;
+  late HttpClient _http;
+  late UrlRefresher _refresher;
+  late JsonTaskStore _store;
+  late DownloadEngine _engine;
+  late Mp4Downloader _mp4;
+  late HlsDownloader _hls;
+  late SourceDetector _detector;
+  late Remuxer _remuxer;
+  late Directory _baseDir;
+
+  /// 插件工作根目录：`<appDocs>/ffmpeg_remux`。
+  late String _rootDir;
+
+  /// setRefreshUrl 若在 init 前调用，先缓存，init 时应用到刷新器。
+  Future<String> Function(String id)? _pendingRefresh;
+  bool _refreshPending = false;
+
+  /// 自动存相册去重：正在保存的 taskId 集合，防并发双存。
+  final Set<String> _albumSaving = <String>{};
+
+  StreamSubscription<TaskEvent>? _eventSub;
+
+  /// 幂等初始化。默认取应用文档目录为根，装配全链路并加载既有任务。
+  Future<void> ensureInitialized({DownloadConfig config = const DownloadConfig()}) async {
+    if (_inited) return;
+
+    _baseDir = await getApplicationDocumentsDirectory();
+    _rootDir = p.join(_baseDir.path, 'ffmpeg_remux');
+
+    _dio = Dio();
+    _http = HttpClient(config, dio: _dio);
+    _refresher = UrlRefresher(
+      maxRetries: config.refreshMaxRetries,
+      backoff: config.refreshBackoff,
+    );
+    if (_refreshPending) {
+      _refresher.callback = _pendingRefresh;
+      _refreshPending = false;
+      _pendingRefresh = null;
+    }
+
+    _mp4 = Mp4Downloader(http: _http, refresher: _refresher);
+    _hls = HlsDownloader(
+      http: _http,
+      refresher: _refresher,
+      segConcurrency: config.segConcurrency,
+    );
+    _detector = SourceDetector(_http);
+    _remuxer = FfmpegRemuxer();
+    _store = JsonTaskStore(_rootDir);
+    _engine = DownloadEngine(
+      store: _store,
+      mp4Downloader: _mp4,
+      hlsDownloader: _hls,
+      remuxer: _remuxer,
+      config: config,
+    );
+
+    await _engine.loadFromStore();
+
+    _eventSub = _engine.events.listen(_onEvent);
+
+    _inited = true;
+  }
+
+  /// 注入 URL 刷新回调。init 前后调用都安全。
+  void setRefreshUrl(Future<String> Function(String id)? fn) {
+    if (_inited) {
+      _refresher.callback = fn;
+    } else {
+      _pendingRefresh = fn;
+      _refreshPending = true;
+    }
+  }
+
+  /// 对外任务事件流。
+  Stream<TaskEvent> get taskStream => _engine.events;
+
+  /// 内存任务表只读快照。
+  Map<String, DownloadTask> get tasks => _engine.tasks;
+
+  /// 提交或续传一个下载任务。已存在且未完成 → 续传；否则识别源类型后新建提交。
+  Future<DownloadTask> enqueue({
+    required String id,
+    required String name,
+    required String cover,
+    required String url,
+    bool saveToAlbum = true,
+  }) async {
+    await ensureInitialized();
+
+    final existing = _engine.tasks[id];
+    if (existing != null && !existing.isFinished) {
+      _engine.resume(id);
+      return existing;
+    }
+
+    final kind = await _detector.detect(url);
+    final task = DownloadTask(
+      taskId: id,
+      movieId: id,
+      name: name,
+      coverImg: cover,
+      url: url,
+      dir: p.join(_rootDir, 'tasks_data', id),
+      kind: kind,
+      createdAtMs: DateTime.now().millisecondsSinceEpoch,
+      saveToAlbum: saveToAlbum,
+    );
+    _engine.submit(task);
+    return task;
+  }
+
+  void pause(String id) => _engine.pause(id);
+
+  void resume(String id) => _engine.resume(id);
+
+  Future<void> cancel(String id, {bool deleteFiles = false}) =>
+      _engine.cancel(id, deleteFiles: deleteFiles);
+
+  void prioritize(String id) => _engine.prioritize(id);
+
+  Future<void> setMaxConcurrency(int n) => _engine.setMaxConcurrency(n);
+
+  /// 删除任务：取消 → 删任务目录 → 删存储记录。
+  Future<void> deleteTask(String id) async {
+    final task = _engine.tasks[id];
+    await _engine.cancel(id);
+    if (task != null) {
+      try {
+        final d = Directory(task.dir);
+        if (await d.exists()) await d.delete(recursive: true);
+      } catch (_) {
+        // 删目录失败不阻断存储清理。
+      }
+    }
+    await _store.delete(id);
+  }
+
+  Future<void> dispose() async {
+    await _eventSub?.cancel();
+    _eventSub = null;
+    _http.close();
+    _dio.close(force: true);
+    await _engine.dispose();
+    _inited = false;
+  }
+
+  /// 手动把某任务的 mp4 存相册。
+  Future<AlbumSaveResult> copyToAlbum(String id) async {
+    final task = _engine.tasks[id];
+    final path = task?.mp4Path;
+    if (task == null || path == null || path.isEmpty) {
+      return const AlbumSaveResult(false, '任务无可保存的 mp4');
+    }
+    final r = await AlbumSaver.saveVideo(path, title: task.name);
+    _engine.setAlbumResult(id, saved: r.ok, error: r.error);
+    return r;
+  }
+
+  /// 手动保存任意本地视频到相册（不关联任务）。
+  Future<AlbumSaveResult> copyPathToAlbum(String path, {String? title}) =>
+      AlbumSaver.saveVideo(path, title: title);
+
+  /// 监听引擎事件，驱动「完成即自动存相册」。
+  void _onEvent(TaskEvent e) {
+    if (e.status != TaskStatus.completed) return;
+    final task = _engine.tasks[e.taskId];
+    if (task == null) return;
+    if (!task.saveToAlbum || task.albumSaved) return;
+    final path = task.mp4Path;
+    if (path == null || path.isEmpty) return;
+    if (_albumSaving.contains(task.taskId)) return;
+
+    _albumSaving.add(task.taskId);
+    // 存相册失败只记 albumError，绝不改动任务的 completed 状态。
+    unawaited(() async {
+      try {
+        final r = await AlbumSaver.saveVideo(path, title: task.name);
+        _engine.setAlbumResult(task.taskId, saved: r.ok, error: r.error);
+      } finally {
+        _albumSaving.remove(task.taskId);
+      }
+    }());
+  }
+}

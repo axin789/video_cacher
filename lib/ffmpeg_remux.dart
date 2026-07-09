@@ -1,6 +1,15 @@
 import 'dart:async';
 import 'package:flutter/services.dart';
 
+// 对外公开 API（纯 Dart 重写）。原生桥 FfmpegRemux 类保留在本文件下方，
+// ffmpeg 兜底 remux 仍依赖它，Phase 3 再做结构调整。
+export 'src/api/download_manager.dart';
+export 'src/api/models/download_task.dart';
+export 'src/api/models/task_status.dart'; // TaskStatus, SourceKind
+export 'src/api/models/task_event.dart';
+export 'src/api/models/download_config.dart';
+export 'src/album/album_saver.dart'; // AlbumSaveResult
+
 class RemuxResult {
   final int ret;
   final String output;
