@@ -24,17 +24,23 @@ class HttpStatusException implements Exception {
   String toString() => 'HttpStatusException($statusCode): $url';
 }
 
-/// HEAD 结果：断点续传所需的三要素。
+/// HEAD 结果：断点续传所需的三要素，外加 content-type（供源类型识别用）。
 class HeadInfo {
   final int? contentLength;
   final String? etag;
   final bool acceptRanges;
+  final String? contentType;
 
-  const HeadInfo({this.contentLength, this.etag, this.acceptRanges = false});
+  const HeadInfo({
+    this.contentLength,
+    this.etag,
+    this.acceptRanges = false,
+    this.contentType,
+  });
 
   @override
   String toString() =>
-      'HeadInfo(contentLength: $contentLength, etag: $etag, acceptRanges: $acceptRanges)';
+      'HeadInfo(contentLength: $contentLength, etag: $etag, acceptRanges: $acceptRanges, contentType: $contentType)';
 }
 
 /// dio 的薄封装，供下载器使用。
@@ -86,7 +92,9 @@ class HttpClient {
     final cl = int.tryParse(h.value('content-length') ?? '');
     final tag = h.value('etag');
     final ar = (h.value('accept-ranges') ?? '').toLowerCase().contains('bytes');
-    return HeadInfo(contentLength: cl, etag: tag, acceptRanges: ar);
+    final ct = h.value('content-type');
+    return HeadInfo(
+        contentLength: cl, etag: tag, acceptRanges: ar, contentType: ct);
   }
 
   /// 便捷方法：只取 content-length。
