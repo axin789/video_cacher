@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:ffmpeg_remux/ffmpeg_remux.dart';
+import 'package:video_cacher/video_cacher.dart';
 import 'package:flutter/material.dart';
 
 import '../widgets/mini_action_button.dart';
@@ -14,7 +14,7 @@ class DownloadListPage extends StatefulWidget {
 }
 
 class _DownloadListPageState extends State<DownloadListPage> {
-  final _mgr = DownloadManager.instance;
+  final _mgr = VideoCacher.instance;
   StreamSubscription<TaskEvent>? _sub;
   List<DownloadTask> _tasks = const [];
 

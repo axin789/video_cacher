@@ -42,7 +42,7 @@ class UrlRefresher {
     this.backoff = const Duration(milliseconds: 500),
   }) : _callback = callback;
 
-  /// 由 DownloadManager 在 setRefreshUrl 时注入/替换。
+  /// 由 VideoCacher 在 setRefreshUrl 时注入/替换。
   set callback(RefreshUrlCallback? cb) => _callback = cb;
 
   bool get hasCallback => _callback != null;
@@ -58,7 +58,7 @@ class UrlRefresher {
 
     final cb = _callback;
     if (cb == null) {
-      FfmpegRemuxLog.d(
+      VideoCacherLog.d(
           'refresh', '[$taskId] 未注入刷新回调（setRefreshUrl），无法刷新');
       return Future<String>.error(NoRefreshCallbackException());
     }
@@ -84,19 +84,19 @@ class UrlRefresher {
         final url = (await cb(taskId)).trim();
         if (url.isEmpty) {
           lastError = StateError('refresh callback returned empty url');
-          FfmpegRemuxLog.d('refresh',
+          VideoCacherLog.d('refresh',
               '[$taskId] 第 ${attempt + 1}/$totalAttempts 次：回调返回空串');
           continue;
         }
-        FfmpegRemuxLog.d('refresh', '[$taskId] 刷新成功（第 ${attempt + 1} 次）');
+        VideoCacherLog.d('refresh', '[$taskId] 刷新成功（第 ${attempt + 1} 次）');
         return url;
       } catch (e) {
         lastError = e;
-        FfmpegRemuxLog.d(
+        VideoCacherLog.d(
             'refresh', '[$taskId] 第 ${attempt + 1}/$totalAttempts 次失败: $e');
       }
     }
-    FfmpegRemuxLog.d(
+    VideoCacherLog.d(
         'refresh', '[$taskId] 刷新彻底失败（$totalAttempts 次）: $lastError');
     throw UrlRefreshFailedException(taskId, totalAttempts, lastError);
   }

@@ -3,17 +3,17 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
-import 'package:ffmpeg_remux/src/api/models/download_config.dart';
-import 'package:ffmpeg_remux/src/api/models/download_task.dart';
-import 'package:ffmpeg_remux/src/api/models/task_event.dart';
-import 'package:ffmpeg_remux/src/api/models/task_status.dart';
-import 'package:ffmpeg_remux/src/download/download_engine.dart';
-import 'package:ffmpeg_remux/src/download/hls/hls_downloader.dart';
-import 'package:ffmpeg_remux/src/download/http/http_client.dart';
-import 'package:ffmpeg_remux/src/download/http/url_refresher.dart';
-import 'package:ffmpeg_remux/src/download/mp4/mp4_downloader.dart';
-import 'package:ffmpeg_remux/src/remux/remuxer.dart';
-import 'package:ffmpeg_remux/src/store/memory_task_store.dart';
+import 'package:video_cacher/src/api/models/download_config.dart';
+import 'package:video_cacher/src/api/models/download_task.dart';
+import 'package:video_cacher/src/api/models/task_event.dart';
+import 'package:video_cacher/src/api/models/task_status.dart';
+import 'package:video_cacher/src/download/download_engine.dart';
+import 'package:video_cacher/src/download/hls/hls_downloader.dart';
+import 'package:video_cacher/src/download/http/http_client.dart';
+import 'package:video_cacher/src/download/http/url_refresher.dart';
+import 'package:video_cacher/src/download/mp4/mp4_downloader.dart';
+import 'package:video_cacher/src/remux/remuxer.dart';
+import 'package:video_cacher/src/store/memory_task_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// 路由式假适配器：拿到 RequestOptions 与 cancelFuture 自行决定返回什么。

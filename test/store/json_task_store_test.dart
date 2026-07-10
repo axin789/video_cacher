@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:ffmpeg_remux/src/api/models/download_task.dart';
-import 'package:ffmpeg_remux/src/api/models/task_status.dart';
-import 'package:ffmpeg_remux/src/store/json_task_store.dart';
+import 'package:video_cacher/src/api/models/download_task.dart';
+import 'package:video_cacher/src/api/models/task_status.dart';
+import 'package:video_cacher/src/store/json_task_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 DownloadTask _task(

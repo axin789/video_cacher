@@ -1,4 +1,4 @@
-import 'package:ffmpeg_remux/ffmpeg_remux.dart';
+import 'package:video_cacher/video_cacher.dart';
 import 'package:flutter/material.dart';
 
 import 'download_list_page.dart';
@@ -11,7 +11,7 @@ class DownloadDetailPage extends StatefulWidget {
 }
 
 class _DownloadDetailPageState extends State<DownloadDetailPage> {
-  final _mgr = DownloadManager.instance;
+  final _mgr = VideoCacher.instance;
   final _urlController = TextEditingController();
   final _idController = TextEditingController();
   final _nameController = TextEditingController();

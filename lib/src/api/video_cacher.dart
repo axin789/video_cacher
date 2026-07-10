@@ -22,10 +22,10 @@ import 'models/task_status.dart';
 
 /// 插件对外唯一门面（单例）。串起 HTTP → 下载 → remux → 存储 → 事件 全链路，
 /// 并在任务完成时自动存相册。
-class DownloadManager {
-  DownloadManager._();
+class VideoCacher {
+  VideoCacher._();
 
-  static final DownloadManager instance = DownloadManager._();
+  static final VideoCacher instance = VideoCacher._();
 
   bool _inited = false;
 
@@ -40,7 +40,7 @@ class DownloadManager {
   late Remuxer _remuxer;
   late Directory _baseDir;
 
-  /// 插件工作根目录：`<appDocs>/ffmpeg_remux`。
+  /// 插件工作根目录：`<appDocs>/video_cacher`。
   late String _rootDir;
 
   /// setRefreshUrl 若在 init 前调用，先缓存，init 时应用到刷新器。
@@ -57,7 +57,7 @@ class DownloadManager {
     if (_inited) return;
 
     _baseDir = await getApplicationDocumentsDirectory();
-    _rootDir = p.join(_baseDir.path, 'ffmpeg_remux');
+    _rootDir = p.join(_baseDir.path, 'video_cacher');
 
     _dio = Dio();
     _http = HttpClient(config, dio: _dio);

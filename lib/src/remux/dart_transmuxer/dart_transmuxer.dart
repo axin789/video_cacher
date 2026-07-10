@@ -28,7 +28,7 @@ class DartTransmuxer implements Remuxer {
   /// 日志开关，默认开启，方便联调时观察；可后续静音。
   static bool verbose = true;
 
-  static const String _logName = 'ffmpeg_remux.transmux';
+  static const String _logName = 'video_cacher.transmux';
 
   final Set<String> _canceled = {};
 

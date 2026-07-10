@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-import 'package:ffmpeg_remux/src/download/hls/aes_decryptor.dart';
+import 'package:video_cacher/src/download/hls/aes_decryptor.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pointycastle/export.dart';
 

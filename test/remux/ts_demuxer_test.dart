@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-import 'package:ffmpeg_remux/src/remux/dart_transmuxer/ts_demuxer.dart';
+import 'package:video_cacher/src/remux/dart_transmuxer/ts_demuxer.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// 把 188 字节的 TS 包组装出来：4 字节头 + payload（自动补齐到 184）。

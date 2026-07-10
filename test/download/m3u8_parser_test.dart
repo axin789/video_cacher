@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:ffmpeg_remux/src/download/hls/m3u8_parser.dart';
+import 'package:video_cacher/src/download/hls/m3u8_parser.dart';
 
 void main() {
   final parser = M3u8Parser();

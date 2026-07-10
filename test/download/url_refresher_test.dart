@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:ffmpeg_remux/src/download/http/url_refresher.dart';
+import 'package:video_cacher/src/download/http/url_refresher.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

@@ -172,7 +172,7 @@ class DownloadEngine {
     _tasks.remove(taskId);
     _etags.remove(taskId);
     await _store.delete(taskId);
-    FfmpegRemuxLog.d('engine', 'task $taskId: ${task.status.name} -> 已删除');
+    VideoCacherLog.d('engine', 'task $taskId: ${task.status.name} -> 已删除');
     _emit(task.copyWith(status: TaskStatus.canceled));
   }
 
@@ -343,7 +343,7 @@ class DownloadEngine {
     // 只记录状态迁移（纯进度更新不打，避免刷屏）；失败附带原因。
     final prev = _tasks[next.taskId];
     if (prev == null || prev.status != next.status) {
-      FfmpegRemuxLog.d(
+      VideoCacherLog.d(
           'engine',
           'task ${next.taskId}: ${prev?.status.name ?? 'new'} -> '
           '${next.status.name}'

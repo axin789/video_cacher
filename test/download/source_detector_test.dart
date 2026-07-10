@@ -2,10 +2,10 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
-import 'package:ffmpeg_remux/src/api/models/download_config.dart';
-import 'package:ffmpeg_remux/src/api/models/task_status.dart';
-import 'package:ffmpeg_remux/src/download/http/http_client.dart';
-import 'package:ffmpeg_remux/src/download/source_detector.dart';
+import 'package:video_cacher/src/api/models/download_config.dart';
+import 'package:video_cacher/src/api/models/task_status.dart';
+import 'package:video_cacher/src/download/http/http_client.dart';
+import 'package:video_cacher/src/download/source_detector.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// 记录调用次数、可为 HEAD/GET 返回不同状态与头，或直接抛异常。

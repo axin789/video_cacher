@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:ffmpeg_remux/src/remux/dart_transmuxer/dart_transmuxer.dart';
+import 'package:video_cacher/src/remux/dart_transmuxer/dart_transmuxer.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 int _u32(Uint8List b, int o) =>

@@ -1,4 +1,4 @@
-import 'package:ffmpeg_remux/ffmpeg_remux.dart';
+import 'package:video_cacher/video_cacher.dart';
 import 'package:flutter/material.dart';
 
 import '../widgets/entry_button.dart';
@@ -13,7 +13,7 @@ class InitPage extends StatefulWidget {
 }
 
 class _InitPageState extends State<InitPage> {
-  final _mgr = DownloadManager.instance;
+  final _mgr = VideoCacher.instance;
   late final Future<void> _initFuture;
 
   @override
@@ -60,7 +60,7 @@ class _InitPageState extends State<InitPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
-                        'ffmpeg_remux example',
+                        'video_cacher example',
                         style: TextStyle(
                           fontSize: 28,
                           fontWeight: FontWeight.w700,

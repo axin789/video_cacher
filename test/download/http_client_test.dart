@@ -1,8 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
-import 'package:ffmpeg_remux/src/api/models/download_config.dart';
-import 'package:ffmpeg_remux/src/download/http/http_client.dart';
+import 'package:video_cacher/src/api/models/download_config.dart';
+import 'package:video_cacher/src/download/http/http_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// 固定返回一个状态码/字节/头的假适配器，无需真实网络。

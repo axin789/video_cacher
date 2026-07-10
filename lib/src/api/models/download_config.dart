@@ -21,7 +21,7 @@ class DownloadConfig {
     this.segConcurrency = 2,
     this.connectTimeout = const Duration(seconds: 15),
     this.receiveTimeout = const Duration(seconds: 30),
-    this.userAgent = 'ffmpeg_remux/1.0',
+    this.userAgent = 'video_cacher/1.0',
     this.refreshMaxRetries = 3,
     this.refreshBackoff = const Duration(milliseconds: 500),
   });

@@ -1,4 +1,4 @@
-import 'package:ffmpeg_remux/src/remux/local_m3u8.dart';
+import 'package:video_cacher/src/remux/local_m3u8.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

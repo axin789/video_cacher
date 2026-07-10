@@ -97,7 +97,7 @@ class HlsDownloader {
         final key = media.key;
         final encrypted =
             key != null && key.method == 'AES-128' && key.uri != null;
-        FfmpegRemuxLog.d('hls',
+        VideoCacherLog.d('hls',
             '[$taskId] playlist: ${segments.length} 片, 加密=$encrypted');
         List<int>? keyBytes;
         if (encrypted) {
@@ -118,7 +118,7 @@ class HlsDownloader {
         );
 
         final files = [for (var i = 0; i < total; i++) _segPath(dir, i)];
-        FfmpegRemuxLog.d('hls', '[$taskId] 下载完成: $total 片');
+        VideoCacherLog.d('hls', '[$taskId] 下载完成: $total 片');
         return HlsDownloadResult(
           segmentFiles: files,
           finalEntryUrl: currentEntry,
@@ -127,12 +127,12 @@ class HlsDownloader {
         // 与 404 竞争时若已取消：不再刷新，立即让取消生效。
         _throwIfCancelled(cancelToken);
         if (refreshes >= _maxRefreshes) {
-          FfmpegRemuxLog.d(
+          VideoCacherLog.d(
               'hls', '[$taskId] 刷新次数超上限($_maxRefreshes)，放弃');
           rethrow;
         }
         refreshes++;
-        FfmpegRemuxLog.d(
+        VideoCacherLog.d(
             'hls',
             '[$taskId] ${e.statusCode} ${e.url} -> '
             '刷新入口（第 $refreshes/$_maxRefreshes 次）');

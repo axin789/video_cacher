@@ -65,18 +65,18 @@ class Mp4Downloader {
           onProgress: onProgress,
           cancelToken: cancelToken,
         );
-        FfmpegRemuxLog.d(
+        VideoCacherLog.d(
             'mp4', '[$taskId] 完成: ${r.mp4Path} (${r.totalBytes} bytes)');
         return r;
       } on UrlExpiredException catch (e) {
         // 直链过期：换新 URL 后重试，保留 `.part` 从已下字节处续传。
         if (refreshes >= _maxUrlRefreshes) {
-          FfmpegRemuxLog.d(
+          VideoCacherLog.d(
               'mp4', '[$taskId] 刷新次数超上限($_maxUrlRefreshes)，放弃');
           rethrow;
         }
         refreshes++;
-        FfmpegRemuxLog.d(
+        VideoCacherLog.d(
             'mp4',
             '[$taskId] ${e.statusCode} 过期 -> '
             '刷新 URL（第 $refreshes/$_maxUrlRefreshes 次）');
@@ -106,7 +106,7 @@ class Mp4Downloader {
     if (existing > 0 && headInfo.acceptRanges && etagMatches) {
       offset = existing;
     }
-    FfmpegRemuxLog.d(
+    VideoCacherLog.d(
         'mp4',
         '[$taskId] HEAD len=$totalLen etag=$headEtag '
         'ranges=${headInfo.acceptRanges} 续传偏移=$offset');
