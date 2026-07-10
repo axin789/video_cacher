@@ -1,52 +1,36 @@
-# ffmpeg_remux
+# video_cacher
 
-一个用于 Flutter 的离线视频缓存插件，主要能力包括：
+纯 Dart 实现的 Flutter 离线视频缓存包：无 ffmpeg、无 SQLite、无任何 native 二进制。
 
-- 下载 `mp4` 和 `m3u8`
-- 使用 SQLite 持久化下载任务
-- 通过业务回调刷新过期下载地址
-- 将 HLS 内容转封装为本地 `mp4`
-- 把最终 `mp4` 复制到系统相册
+## 能力
 
-适合需要断点续传、离线缓存、HLS 转 MP4 的移动端场景。
+- 下载 `mp4` 直链和 `m3u8`(HLS)，自动识别源类型
+- 断点续传、暂停/继续/取消/优先、并发调度
+- 通过 `setRefreshUrl` 回调刷新过期下载地址（404/410 自动触发）
+- HLS AES-128 分片解密
+- 纯 Dart 转封装（remux，不转码）：h264 + AAC 的 TS → 本地 `mp4`
+- 任务用 JSON 持久化，App 重启可恢复
+- 成片可自动/手动保存到系统相册（基于 photo_manager）
 
-## 功能特性
+## 限制
 
-- 同时支持 `mp4` 和 `m3u8`
-- 自动识别资源类型
-- 本地持久化任务列表
-- 支持暂停、手动继续、删除
-- 支持通过 `setRefreshUrl` 自定义刷新下载地址
-- 支持手动复制到相册和下载完成后自动复制
-- 通过任务流把状态变化抛给下载列表 UI
-
-## 平台支持
-
-- Android：支持
-- iOS：支持
-- macOS：有插件目标，但主要使用场景仍是移动端
-- Web：仅提供空实现，保证编译通过
+- **h265(HEVC) 暂不支持**：h265 的 HLS 任务会以 `failed` 结束，错误信息形如
+  `UnsupportedStreamException: video codec h265 not supported yet (only h264)`。
+  下一版本计划支持。
+- 音轨仅支持 AAC-ADTS。
 
 ## 安装
 
-在 `pubspec.yaml` 中添加依赖：
-
 ```yaml
 dependencies:
-  ffmpeg_remux: ^0.0.5
-```
-
-然后执行：
-
-```bash
-flutter pub get
+  video_cacher: ^0.1.0
 ```
 
 ## 权限说明
 
-### Android
+保存相册依赖 photo_manager，需要以下权限。
 
-如果需要复制到相册，请在业务工程的 `AndroidManifest.xml` 中添加这些权限：
+### Android
 
 ```xml
 <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
@@ -54,15 +38,7 @@ flutter pub get
 <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
 ```
 
-如果你的工程直接依赖这个插件模块，请让业务工程的 Android 配置和插件要求保持一致：
-
-- `compileSdk = 36`
-- `ndkVersion = "27.0.12077973"`
-- `minSdk = 24`
-
 ### iOS
-
-如果需要复制到相册，请在 `Info.plist` 中添加：
 
 ```xml
 <key>NSPhotoLibraryAddUsageDescription</key>
@@ -76,24 +52,21 @@ flutter pub get
 ### 1. 初始化
 
 ```dart
-final mgr = DownloadManager.instance;
+final cacher = VideoCacher.instance;
 
-mgr.setRefreshUrl((id) async {
+cacher.setRefreshUrl((id) async {
   // 根据业务 id 向你自己的后端查询最新可下载地址。
-  // 例如：
-  // final result = await api.fetchLatestPlayUrl(id);
-  // return result.url;
-  throw UnimplementedError();
+  final result = await api.fetchLatestPlayUrl(id);
+  return result.url;
 });
 
-await mgr.ensureInitialized();
-await mgr.setMaxConcurrency(3);
+await cacher.ensureInitialized();
 ```
 
 ### 2. 创建任务
 
 ```dart
-final task = await mgr.enqueue(
+final task = await cacher.enqueue(
   id: 'video_1001',
   name: '第 1 集',
   cover: 'https://example.com/cover.jpg',
@@ -102,161 +75,65 @@ final task = await mgr.enqueue(
 );
 ```
 
-### 3. 监听任务变化
+### 3. 监听任务事件
 
 ```dart
-final sub = mgr.taskStream.listen((task) {
-  print(
-    'task=${task.taskId} '
-    'status=${task.status.name} '
-    'local=${task.localPath} '
-    'error=${task.error}',
-  );
+final sub = cacher.taskStream.listen((e) {
+  print('task=${e.taskId} status=${e.status.name} progress=${e.progress}');
 });
 ```
 
 ### 4. 常用控制
 
 ```dart
-mgr.pause(task.taskId);
-mgr.resumeById(task.taskId);
-await mgr.retryFailedTaskById(task.taskId);
-await mgr.deleteTaskById(task.taskId);
+cacher.pause(task.taskId);
+cacher.resume(task.taskId);
+cacher.prioritize(task.taskId);
+await cacher.cancel(task.taskId, deleteFiles: true);
+await cacher.deleteTask(task.taskId);
+await cacher.setMaxConcurrency(3);
 ```
 
-### 5. 复制到相册
+### 5. 保存到相册
 
 ```dart
-final result = await mgr.copyToAlbumWithResult(task.taskId);
+final result = await cacher.copyToAlbum(task.taskId);
 print('ok=${result.ok}, error=${result.error}');
-```
 
-也可以直接按本地路径复制：
-
-```dart
-final result = await mgr.copyPathToAlbumWithResult(
-  task.mp4Path!,
-  title: task.name,
-);
+// 也可以直接按本地路径保存：
+await cacher.copyPathToAlbum(task.mp4Path!, title: task.name);
 ```
 
 ## API 概览
 
-### DownloadManager
+### VideoCacher
 
 - `setRefreshUrl(Future<String> Function(String id)? fn)`
-- `ensureInitialized()`
-- `setMaxConcurrency(int n)`
+- `ensureInitialized({DownloadConfig config})`
 - `enqueue({required id, required name, required cover, required url, bool saveToAlbum = true})`
-- `pause(String taskId)`
-- `resumeById(String taskId)`
-- `retryFailedTaskById(String taskId, {String? overrideUrl})`
-- `deleteTaskById(String taskId)`
-- `copyToAlbum(String taskId)`
-- `copyToAlbumWithResult(String taskId)`
-- `copyPathToAlbum(String mp4Path, {String? title})`
-- `copyPathToAlbumWithResult(String mp4Path, {String? title})`
-- `taskStream`
-- `tasks`
+- `pause(String taskId)` / `resume(String taskId)` / `prioritize(String taskId)`
+- `cancel(String taskId, {bool deleteFiles = false})`
+- `deleteTask(String taskId)`
+- `setMaxConcurrency(int n)`
+- `copyToAlbum(String taskId)` / `copyPathToAlbum(String path, {String? title})`
+- `taskStream` — `Stream<TaskEvent>`
+- `tasks` — `Map<String, DownloadTask>` 只读快照
 
 ### 任务状态
 
-当前支持的任务状态：
-
-- `queued`
-- `running`
-- `paused`
-- `completed`
-- `failed`
-- `canceled`
-- `postProcessing`
+`queued` / `running` / `remuxing` / `paused` / `completed` / `failed` / `canceled`
 
 ## URL 刷新约定
 
-`setRefreshUrl` 会在两个场景触发：
+`setRefreshUrl` 在下载中遇到 `404` / `410` 时触发（HLS 的入口 m3u8、key、ts 三类地址都覆盖）。
+回调参数是任务的 `taskId`，需返回完整可下载的新地址，不能为空。
 
-- 下载过程中遇到 `404` / `410` 这类资源过期错误时
-- 失败任务被手动重试时
+## App 重启后的行为
 
-回调参数是当前任务的 `taskId`：
-
-```dart
-Future<String> refreshUrl(String id)
-```
-
-建议满足这些约定：
-
-- 返回完整可下载的 `mp4` 或 `m3u8` 地址
-- 返回值不能为空
-- 如果是 HLS，刷新后的播放列表结构最好尽量稳定，便于续传
-
-业务接入示例：
-
-```dart
-mgr.setRefreshUrl((id) async {
-  final task = mgr.tasks[id];
-  if (task == null) return '';
-
-  final result = await api.fetchLatestPlayUrl(
-    movieId: task.movieId,
-    lid: task.lid,
-  );
-  return result.url;
-});
-```
-
-## 任务行为
-
-### 相同 `id` 的处理规则
-
-如果同一个 `id` 已经存在：
-
-- 已完成任务：视为已经下载过
-- 进行中或暂停中的任务：视为已经在下载列表中
-- 失败任务：允许重试，重试时可以刷新内部 URL
-
-### App 重启后的行为
-
-未完成任务在冷启动后不会自动继续下载。
-
-App 重启后：
-
-- 未完成任务会从 SQLite 恢复
-- 之前处于运行中的任务会统一改成 `paused`
-- 需要用户手动在下载列表里点击继续
-
-## 相册复制错误
-
-插件会返回更细的相册复制结果，例如：
-
-- `file not exists`
-- `file is empty`
-- `photo permission denied`
-- `saved asset not found`
-- `saveVideo exception: ...`
-
-建议在 UI 中使用 `copyToAlbumWithResult` 或 `copyPathToAlbumWithResult` 直接展示这些信息。
-
-## 说明
-
-- 最终可播放产物通常是 `task.localPath` 或 `task.mp4Path`
-- HLS 任务会在分片下载完成后继续转封装成 MP4
-- 失败任务的重试在真实业务里应走 `setRefreshUrl`
+- 任务从 JSON 存储恢复
+- 之前处于 running/queued/remuxing 的任务统一转为 `paused`
+- 不自动续传，需用户手动继续
 
 ## Example
 
-示例工程在 `example/lib/` 下，主要包含：
-
-- `pages/init_page.dart`
-- `pages/download_detail_page.dart`
-- `pages/download_list_page.dart`
-- `pages/video_player_page.dart`
-
-示例里演示了：
-
-- 下载器初始化
-- 创建任务
-- 基于列表的任务管理
-- 手动继续、重试、删除
-- 本地视频播放
-- 相册复制结果处理
+示例工程在 `example/lib/` 下，演示了初始化、创建任务、列表管理、暂停/继续/删除、本地播放和相册保存。

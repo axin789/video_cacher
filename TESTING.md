@@ -20,8 +20,15 @@
 
 - [ ] 创建 m3u8 下载任务
 - [ ] 分片下载进度正常更新
-- [ ] 后处理正常执行并输出最终 mp4
+- [ ] 纯 Dart 转封装正常执行并输出最终 mp4
 - [ ] 最终任务状态为 completed
+- [ ] AES-128 加密流解密后可正常播放
+
+### C1 h265 预期失败
+
+- [ ] 创建 h265(HEVC) 的 m3u8 任务
+- [ ] 分片下载完成后转封装阶段失败
+- [ ] 任务状态为 failed，error 含 `UnsupportedStreamException`（暂不支持 h265，属预期行为）
 
 ## D. URL 过期恢复
 
@@ -51,7 +58,7 @@
 ## G. 持久化恢复
 
 - [ ] 下载过程中杀掉 app 后重新打开
-- [ ] 任务能从 SQLite 恢复
+- [ ] 任务能从 JSON 存储恢复
 - [ ] 未完成任务在重启后变成 `paused`
 - [ ] 用户点击继续后，任务能从断点恢复
 
@@ -68,3 +75,4 @@
 | 3 | mp4-expire | v1003 | ... | 刷新后继续 |
 | 4 | hls-ts-expire | v1004 | ... | 刷新后继续 |
 | 5 | hls-cancel-remux | v1005 | ... | 已取消且没有最终 mp4 |
+| 6 | hls-h265 | v1006 | ... | failed，error 含 UnsupportedStreamException |
