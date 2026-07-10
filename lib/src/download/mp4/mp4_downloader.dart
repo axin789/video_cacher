@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 
+import '../../log.dart';
 import '../http/http_client.dart';
 import '../http/url_refresher.dart';
 
@@ -55,7 +56,7 @@ class Mp4Downloader {
 
     while (true) {
       try {
-        return await _attempt(
+        final r = await _attempt(
           taskId: taskId,
           url: currentUrl,
           dest: File(destPath),
@@ -64,10 +65,21 @@ class Mp4Downloader {
           onProgress: onProgress,
           cancelToken: cancelToken,
         );
-      } on UrlExpiredException {
+        FfmpegRemuxLog.d(
+            'mp4', '[$taskId] 完成: ${r.mp4Path} (${r.totalBytes} bytes)');
+        return r;
+      } on UrlExpiredException catch (e) {
         // 直链过期：换新 URL 后重试，保留 `.part` 从已下字节处续传。
-        if (refreshes >= _maxUrlRefreshes) rethrow;
+        if (refreshes >= _maxUrlRefreshes) {
+          FfmpegRemuxLog.d(
+              'mp4', '[$taskId] 刷新次数超上限($_maxUrlRefreshes)，放弃');
+          rethrow;
+        }
         refreshes++;
+        FfmpegRemuxLog.d(
+            'mp4',
+            '[$taskId] ${e.statusCode} 过期 -> '
+            '刷新 URL（第 $refreshes/$_maxUrlRefreshes 次）');
         currentUrl = await _refresher.refresh(taskId);
       }
     }
@@ -94,6 +106,10 @@ class Mp4Downloader {
     if (existing > 0 && headInfo.acceptRanges && etagMatches) {
       offset = existing;
     }
+    FfmpegRemuxLog.d(
+        'mp4',
+        '[$taskId] HEAD len=$totalLen etag=$headEtag '
+        'ranges=${headInfo.acceptRanges} 续传偏移=$offset');
 
     final Response<ResponseBody> resp;
     try {

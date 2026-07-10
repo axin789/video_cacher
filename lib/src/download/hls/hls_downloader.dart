@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
 
+import '../../log.dart';
 import '../http/http_client.dart';
 import '../http/url_refresher.dart';
 import 'aes_decryptor.dart';
@@ -96,6 +97,8 @@ class HlsDownloader {
         final key = media.key;
         final encrypted =
             key != null && key.method == 'AES-128' && key.uri != null;
+        FfmpegRemuxLog.d('hls',
+            '[$taskId] playlist: ${segments.length} 片, 加密=$encrypted');
         List<int>? keyBytes;
         if (encrypted) {
           keyBytes = await _http.getBytes(key.uri!, cancelToken: cancelToken);
@@ -115,15 +118,24 @@ class HlsDownloader {
         );
 
         final files = [for (var i = 0; i < total; i++) _segPath(dir, i)];
+        FfmpegRemuxLog.d('hls', '[$taskId] 下载完成: $total 片');
         return HlsDownloadResult(
           segmentFiles: files,
           finalEntryUrl: currentEntry,
         );
-      } on UrlExpiredException {
+      } on UrlExpiredException catch (e) {
         // 与 404 竞争时若已取消：不再刷新，立即让取消生效。
         _throwIfCancelled(cancelToken);
-        if (refreshes >= _maxRefreshes) rethrow;
+        if (refreshes >= _maxRefreshes) {
+          FfmpegRemuxLog.d(
+              'hls', '[$taskId] 刷新次数超上限($_maxRefreshes)，放弃');
+          rethrow;
+        }
         refreshes++;
+        FfmpegRemuxLog.d(
+            'hls',
+            '[$taskId] ${e.statusCode} ${e.url} -> '
+            '刷新入口（第 $refreshes/$_maxRefreshes 次）');
         currentEntry = await _refresher.refresh(taskId);
       }
     }

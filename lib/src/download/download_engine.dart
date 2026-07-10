@@ -8,6 +8,7 @@ import '../api/models/download_config.dart';
 import '../api/models/download_task.dart';
 import '../api/models/task_event.dart';
 import '../api/models/task_status.dart';
+import '../log.dart';
 import '../remux/remuxer.dart';
 import '../store/task_store.dart';
 import 'hls/hls_downloader.dart';
@@ -321,6 +322,15 @@ class DownloadEngine {
 
   /// 提交一次任务变更：写内存 → upsert（状态变更立即刷盘、纯进度去抖）→ 广播。
   void _commit(DownloadTask next) {
+    // 只记录状态迁移（纯进度更新不打，避免刷屏）；失败附带原因。
+    final prev = _tasks[next.taskId];
+    if (prev == null || prev.status != next.status) {
+      FfmpegRemuxLog.d(
+          'engine',
+          'task ${next.taskId}: ${prev?.status.name ?? 'new'} -> '
+          '${next.status.name}'
+          '${next.status == TaskStatus.failed ? ' | ${next.error}' : ''}');
+    }
     _tasks[next.taskId] = next;
     // 忽略写入错误：dispose 关闭 store 后仍可能有活跃 worker 触发 upsert，
     // 真实 store（如 sqlite）会抛，这里吞掉避免未捕获的异步异常。

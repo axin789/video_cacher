@@ -1,3 +1,5 @@
+import '../../log.dart';
+
 /// 业务方注入的 URL 刷新回调：给定 taskId，返回该任务的新直链。
 typedef RefreshUrlCallback = Future<String> Function(String taskId);
 
@@ -56,6 +58,8 @@ class UrlRefresher {
 
     final cb = _callback;
     if (cb == null) {
+      FfmpegRemuxLog.d(
+          'refresh', '[$taskId] 未注入刷新回调（setRefreshUrl），无法刷新');
       return Future<String>.error(NoRefreshCallbackException());
     }
 
@@ -80,13 +84,20 @@ class UrlRefresher {
         final url = (await cb(taskId)).trim();
         if (url.isEmpty) {
           lastError = StateError('refresh callback returned empty url');
+          FfmpegRemuxLog.d('refresh',
+              '[$taskId] 第 ${attempt + 1}/$totalAttempts 次：回调返回空串');
           continue;
         }
+        FfmpegRemuxLog.d('refresh', '[$taskId] 刷新成功（第 ${attempt + 1} 次）');
         return url;
       } catch (e) {
         lastError = e;
+        FfmpegRemuxLog.d(
+            'refresh', '[$taskId] 第 ${attempt + 1}/$totalAttempts 次失败: $e');
       }
     }
+    FfmpegRemuxLog.d(
+        'refresh', '[$taskId] 刷新彻底失败（$totalAttempts 次）: $lastError');
     throw UrlRefreshFailedException(taskId, totalAttempts, lastError);
   }
 }
