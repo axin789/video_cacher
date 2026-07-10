@@ -13,8 +13,6 @@ import '../download/http/url_refresher.dart';
 import '../download/mp4/mp4_downloader.dart';
 import '../download/source_detector.dart';
 import '../remux/dart_transmuxer/dart_transmuxer.dart';
-import '../remux/fallback_remuxer.dart';
-import '../remux/ffmpeg_fallback/ffmpeg_remuxer.dart';
 import '../remux/remuxer.dart';
 import '../store/json_task_store.dart';
 import 'models/download_config.dart';
@@ -80,7 +78,7 @@ class DownloadManager {
       segConcurrency: config.segConcurrency,
     );
     _detector = SourceDetector(_http);
-    _remuxer = FallbackRemuxer(primary: DartTransmuxer(), fallback: FfmpegRemuxer());
+    _remuxer = DartTransmuxer();
     _store = JsonTaskStore(_rootDir);
     _engine = DownloadEngine(
       store: _store,

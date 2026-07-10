@@ -12,7 +12,7 @@ import 'ts_demuxer.dart';
 
 /// 输入流不受纯 Dart transmuxer 支持（如 H.265、无 AAC 音轨、缺 SPS/PPS）。
 ///
-/// [FallbackRemuxer] 捕获它并转交给 native 兜底。
+/// 当前无兜底实现，抛出后任务会以该消息标记为 failed。
 class UnsupportedStreamException implements Exception {
   final String reason;
   const UnsupportedStreamException(this.reason);
@@ -49,8 +49,9 @@ class DartTransmuxer implements Remuxer {
     try {
       final result = await _run(taskId, segmentFiles, outMp4, onProgress, sw);
       return result;
-    } on UnsupportedStreamException {
-      rethrow; // 交给 FallbackRemuxer
+    } on UnsupportedStreamException catch (e) {
+      _log('unsupported: ${e.reason}');
+      return RemuxResult(ok: false, error: e.toString());
     } catch (e, st) {
       _log('error: $e');
       developer.log('transmux failed', name: _logName, error: e, stackTrace: st);
@@ -99,12 +100,12 @@ class DartTransmuxer implements Remuxer {
 
     if (video == null || vType != TsStreamType.h264) {
       throw UnsupportedStreamException(
-        '$vCodec detected -> fallback to native (only h264 supported)',
+        'video codec $vCodec not supported yet (only h264)',
       );
     }
     if (audio == null || aType != TsStreamType.aacAdts) {
       throw UnsupportedStreamException(
-        'audio=$aCodec -> fallback to native (only AAC-ADTS supported)',
+        'audio codec $aCodec not supported yet (only AAC-ADTS)',
       );
     }
 
@@ -151,12 +152,10 @@ class DartTransmuxer implements Remuxer {
     }
 
     if (sps == null || pps == null) {
-      throw UnsupportedStreamException(
-        'missing SPS/PPS -> fallback to native',
-      );
+      throw const UnsupportedStreamException('missing SPS/PPS');
     }
     if (vsamples.isEmpty) {
-      throw const UnsupportedStreamException('no video frames -> fallback');
+      throw const UnsupportedStreamException('no video frames');
     }
     _log('video: sps=${sps.isNotEmpty} pps=${pps.isNotEmpty} '
         'frames=${vsamples.length} I=$iCount P=$pCount B=$bCount');
@@ -164,9 +163,7 @@ class DartTransmuxer implements Remuxer {
     // ---- audio：ADTS 帧 ----
     final aac = parseAdts(audio.units.map((u) => u.data.toBytes()));
     if (aac == null) {
-      throw const UnsupportedStreamException(
-        'no decodable AAC frames -> fallback',
-      );
+      throw const UnsupportedStreamException('no decodable AAC frames');
     }
     _log('audio: frames=${aac.frames.length} rate=${aac.sampleRate} '
         'ch=${aac.channels} aot=${aac.objectType}');

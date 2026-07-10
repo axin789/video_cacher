@@ -1,5 +1,4 @@
 # This is a generated file; do not edit or check into version control.
-ffmpeg_remux=/Users/luckin/Code/G/ffmpeg_remux/
 integration_test=/Users/luckin/flutter/packages/integration_test/
 path_provider=/Users/luckin/.pub-cache/hosted/pub.dev/path_provider-2.1.5/
 path_provider_android=/Users/luckin/.pub-cache/hosted/pub.dev/path_provider_android-2.2.17/
@@ -7,7 +6,6 @@ path_provider_foundation=/Users/luckin/.pub-cache/hosted/pub.dev/path_provider_f
 path_provider_linux=/Users/luckin/.pub-cache/hosted/pub.dev/path_provider_linux-2.2.1/
 path_provider_windows=/Users/luckin/.pub-cache/hosted/pub.dev/path_provider_windows-2.3.0/
 photo_manager=/Users/luckin/.pub-cache/hosted/pub.dev/photo_manager-3.8.3/
-sqlite3_flutter_libs=/Users/luckin/.pub-cache/hosted/pub.dev/sqlite3_flutter_libs-0.5.42/
 video_player=/Users/luckin/.pub-cache/hosted/pub.dev/video_player-2.10.0/
 video_player_android=/Users/luckin/.pub-cache/hosted/pub.dev/video_player_android-2.8.4/
 video_player_avfoundation=/Users/luckin/.pub-cache/hosted/pub.dev/video_player_avfoundation-2.8.4/

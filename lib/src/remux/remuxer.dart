@@ -8,7 +8,7 @@ class RemuxResult {
 
 /// 把有序的已解密 TS 分片合成为 mp4 的抽象。
 ///
-/// Phase 1 由 [FfmpegRemuxer]（复用现有 native）实现；Phase 3 换成纯 Dart transmuxer。
+/// 当前唯一实现为纯 Dart transmuxer；未来 h265 实现同样遵循此接口。
 abstract class Remuxer {
   /// 把按播放列表顺序排好的已解密分片 [segmentFiles] 合成到 [outMp4]。
   Future<RemuxResult> remux({
