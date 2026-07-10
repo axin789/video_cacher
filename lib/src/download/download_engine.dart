@@ -158,6 +158,24 @@ class DownloadEngine {
     }
   }
 
+  /// 删除任务：中断（若活跃）→ 出队 → 移出内存表 → 删持久化记录 → 广播 canceled
+  /// 事件（UI 以 tasks 表重建列表，移除后即刻消失，无需等重启）。
+  ///
+  /// 不走 [_commit]（避免再写一次存储与 [_store.delete] 竞争复活已删文件）；
+  /// 活跃 worker 之后的提交因任务已不在 [_tasks] 而被跳过，不会复活。
+  Future<void> remove(String taskId) async {
+    if (_disposed) return;
+    final task = _tasks[taskId];
+    if (task == null) return;
+    _pendingIntent[taskId] = _Intent.cancel;
+    _interrupt(task);
+    _tasks.remove(taskId);
+    _etags.remove(taskId);
+    await _store.delete(taskId);
+    FfmpegRemuxLog.d('engine', 'task $taskId: ${task.status.name} -> 已删除');
+    _emit(task.copyWith(status: TaskStatus.canceled));
+  }
+
   /// 把等待中的任务移到队首。
   void prioritize(String taskId) => _queue.prioritize(taskId);
 

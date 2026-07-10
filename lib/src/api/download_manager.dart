@@ -156,19 +156,18 @@ class DownloadManager {
 
   Future<void> setMaxConcurrency(int n) => _engine.setMaxConcurrency(n);
 
-  /// 删除任务：取消 → 删任务目录 → 删存储记录。
+  /// 删除任务：引擎侧移除（中断 + 出内存表 + 删存储记录）→ 删任务目录。
   Future<void> deleteTask(String id) async {
     final task = _engine.tasks[id];
-    await _engine.cancel(id);
+    await _engine.remove(id);
     if (task != null) {
       try {
         final d = Directory(task.dir);
         if (await d.exists()) await d.delete(recursive: true);
       } catch (_) {
-        // 删目录失败不阻断存储清理。
+        // 删目录失败不影响删除语义。
       }
     }
-    await _store.delete(id);
   }
 
   Future<void> dispose() async {

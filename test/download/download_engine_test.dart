@@ -820,4 +820,37 @@ void main() {
     await rec.dispose();
     await engine.dispose();
   });
+
+  test('16. remove: 下载中删除 → 任务立刻从 tasks 消失、store 清除、不复活', () async {
+    final gates = {'a.mp4': Completer<void>()};
+    final store = MemoryTaskStore();
+    final engine = DownloadEngine(
+      store: store,
+      mp4Downloader: _mp4Dl(_gatedMp4Adapter(gates)),
+      hlsDownloader: _hlsDl(_idleAdapter()),
+      remuxer: _FakeRemuxer(),
+    );
+    final rec = _Recorder(engine);
+
+    engine.submit(_task('a',
+        kind: SourceKind.mp4, url: 'https://cdn/a.mp4', dir: mkDir('a')));
+    await rec.wait('a', TaskStatus.running);
+
+    // 下载进行中删除：内存表立刻移除（UI 依此重建列表 → 即刻消失），存储清除。
+    await engine.remove('a');
+    expect(engine.tasks.containsKey('a'), isFalse);
+    expect(await store.loadAll(), isEmpty);
+
+    // 广播了终态事件供 UI 收尾。
+    expect(rec.seq['a'], contains(TaskStatus.canceled));
+
+    // 活跃 worker 随后被取消收尾：不得复活任务、不得回写存储。
+    gates['a.mp4']!.complete();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(engine.tasks.containsKey('a'), isFalse, reason: '收尾后不得复活');
+    expect(await store.loadAll(), isEmpty, reason: '收尾后不得回写存储');
+
+    await rec.dispose();
+    await engine.dispose();
+  });
 }
