@@ -1,6 +1,6 @@
-# ffmpeg_remux_example
+# video_cacher_example
 
-Demonstrates how to use the ffmpeg_remux plugin.
+Demonstrates how to use the video_cacher plugin.
 
 ## Getting Started
 

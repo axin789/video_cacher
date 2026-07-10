@@ -5,7 +5,7 @@
 // 'flutter create' template.
 
 // The application's name. By default this is also the title of the Flutter window.
-PRODUCT_NAME = ffmpeg_remux_example
+PRODUCT_NAME = video_cacher_example
 
 // The application's bundle identifier
 PRODUCT_BUNDLE_IDENTIFIER = com.media.ffmpegRemuxExample

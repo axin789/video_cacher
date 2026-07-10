@@ -1,11 +1,11 @@
 {
-    "name": "ffmpeg_remux_example",
-    "short_name": "ffmpeg_remux_example",
+    "name": "video_cacher_example",
+    "short_name": "video_cacher_example",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "Demonstrates how to use the ffmpeg_remux plugin.",
+    "description": "Demonstrates how to use the video_cacher plugin.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

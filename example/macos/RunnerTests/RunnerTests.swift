@@ -3,7 +3,7 @@ import FlutterMacOS
 import XCTest
 
 
-@testable import ffmpeg_remux
+@testable import video_cacher
 
 // This demonstrates a simple unit test of the Swift portion of this plugin's implementation.
 //
