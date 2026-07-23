@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:meta/meta.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -190,21 +191,30 @@ class VideoCacher {
   Future<AlbumSaveResult> copyPathToAlbum(String path, {String? title}) =>
       AlbumSaver.saveVideo(path, title: title);
 
+  /// 自动存相册准入判定：需要存、未存过、且从未失败过。
+  /// 首次失败后 albumError 非空即不再自动重试（setAlbumResult 会再广播一次
+  /// completed 事件，不挡会形成无限重试环），此后只能手动 copyToAlbum。
+  @visibleForTesting
+  static bool shouldAutoSave(DownloadTask task) {
+    if (!task.saveToAlbum || task.albumSaved) return false;
+    if (task.albumError != null) return false;
+    final path = task.mp4Path;
+    return path != null && path.isNotEmpty;
+  }
+
   /// 监听引擎事件，驱动「完成即自动存相册」。
   void _onEvent(TaskEvent e) {
     if (e.status != TaskStatus.completed) return;
     final task = _engine.tasks[e.taskId];
     if (task == null) return;
-    if (!task.saveToAlbum || task.albumSaved) return;
-    final path = task.mp4Path;
-    if (path == null || path.isEmpty) return;
+    if (!shouldAutoSave(task)) return;
     if (_albumSaving.contains(task.taskId)) return;
 
     _albumSaving.add(task.taskId);
     // 存相册失败只记 albumError，绝不改动任务的 completed 状态。
     unawaited(() async {
       try {
-        final r = await AlbumSaver.saveVideo(path, title: task.name);
+        final r = await AlbumSaver.saveVideo(task.mp4Path!, title: task.name);
         _engine.setAlbumResult(task.taskId, saved: r.ok, error: r.error);
       } finally {
         _albumSaving.remove(task.taskId);
