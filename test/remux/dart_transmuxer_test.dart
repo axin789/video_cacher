@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -111,6 +112,95 @@ int _countTraks(Uint8List b) {
 }
 
 void main() {
+  group('DartTransmuxer isolate 行为', () {
+    final fixture = File('test/fixtures/ts/h264_aac.ts');
+    late Directory tmp;
+
+    setUp(() async {
+      VideoCacherLog.verbose = false;
+      tmp = await Directory.systemTemp.createTemp('transmux_iso_');
+    });
+
+    tearDown(() async {
+      if (tmp.existsSync()) await tmp.delete(recursive: true);
+    });
+
+    test('多分片输入：onProgress 回报递增的累计输入字节', () async {
+      // 把 fixture 按 188 字节包边界切成 3 个分片
+      final bytes = await fixture.readAsBytes();
+      final third = (bytes.length ~/ 188 ~/ 3) * 188;
+      final parts = [
+        bytes.sublist(0, third),
+        bytes.sublist(third, third * 2),
+        bytes.sublist(third * 2),
+      ];
+      final segFiles = <String>[];
+      for (var i = 0; i < parts.length; i++) {
+        final f = File('${tmp.path}/seg_$i.ts');
+        await f.writeAsBytes(parts[i]);
+        segFiles.add(f.path);
+      }
+
+      final progress = <int>[];
+      final out = '${tmp.path}/out.mp4';
+      final res = await DartTransmuxer().remux(
+        taskId: 'p',
+        segmentFiles: segFiles,
+        outMp4: out,
+        dir: tmp.path,
+        onProgress: progress.add,
+      );
+      expect(res.ok, isTrue, reason: res.error);
+      expect(progress.length, greaterThanOrEqualTo(2),
+          reason: '每喂完一个分片应回报一次');
+      for (var i = 1; i < progress.length; i++) {
+        expect(progress[i], greaterThan(progress[i - 1]), reason: '应单调递增');
+      }
+      expect(progress.last, bytes.length, reason: '最终值应为输入总字节');
+      expect(File(out).existsSync(), isTrue);
+    });
+
+    test('remux 进行中 cancel：强杀 worker，结果 canceled，无 out 也无 .part',
+        () async {
+      // 用 fixture 重复拼接构造较大的 4 片输入，保证 worker 跑得够久
+      final base = await fixture.readAsBytes();
+      final big = BytesBuilder(copy: false);
+      for (var i = 0; i < 100; i++) {
+        big.add(base);
+      }
+      final segBytes = big.takeBytes(); // ~4.8MB/片
+      final segFiles = <String>[];
+      for (var i = 0; i < 4; i++) {
+        final f = File('${tmp.path}/big_$i.ts');
+        await f.writeAsBytes(segBytes);
+        segFiles.add(f.path);
+      }
+
+      final mux = DartTransmuxer();
+      final out = '${tmp.path}/out.mp4';
+      final firstProgress = Completer<void>();
+      final future = mux.remux(
+        taskId: 'c',
+        segmentFiles: segFiles,
+        outMp4: out,
+        dir: tmp.path,
+        onProgress: (_) {
+          if (!firstProgress.isCompleted) firstProgress.complete();
+        },
+      );
+      // 首个进度到达 = worker 正在流水线中途（还剩 3 片 + 构建），此时取消
+      await firstProgress.future;
+      mux.cancel('c');
+
+      final res = await future;
+      expect(res.ok, isFalse);
+      expect(res.error, 'canceled');
+      expect(File(out).existsSync(), isFalse, reason: '不应产出 mp4');
+      expect(File('$out.part').existsSync(), isFalse,
+          reason: '取消后应清理 .part');
+    });
+  });
+
   group('DartTransmuxer 流类型处理', () {
     late Directory tmp;
 
