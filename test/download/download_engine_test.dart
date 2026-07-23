@@ -46,12 +46,14 @@ List<int> _range(int start, int end) =>
     List<int>.generate(end - start, (i) => (start + i) % 256);
 
 /// 假 remuxer：默认成功即产出 outMp4；可注入 [gate] 卡住 remux（cancel 时放行），
-/// 或 [ok]=false 模拟失败。记录 cleanup / cancel 调用。
+/// 或 [ok]=false 模拟失败；[reportProgress] 时按输入字节回报两笔递增进度。
+/// 记录 cleanup / cancel 调用。
 class _FakeRemuxer implements Remuxer {
-  _FakeRemuxer({this.ok = true, this.gate});
+  _FakeRemuxer({this.ok = true, this.gate, this.reportProgress = false});
 
   final bool ok;
   final Completer<void>? gate;
+  final bool reportProgress;
   int cleanupCalls = 0;
   final List<String> canceled = [];
 
@@ -64,6 +66,14 @@ class _FakeRemuxer implements Remuxer {
     void Function(int bytes)? onProgress,
   }) async {
     if (gate != null) await gate!.future;
+    if (reportProgress) {
+      var total = 0;
+      for (final f in segmentFiles) {
+        total += File(f).lengthSync();
+      }
+      onProgress?.call(total ~/ 2);
+      onProgress?.call(total);
+    }
     if (!ok) return const RemuxResult(ok: false, error: 'remux boom');
     File(outMp4).writeAsBytesSync(const [0, 1, 2, 3]);
     return RemuxResult(ok: true, outMp4: outMp4);
@@ -1117,6 +1127,110 @@ void main() {
     final stored =
         (await store.loadAll()).firstWhere((e) => e.taskId == 't21');
     expect(stored.kind, SourceKind.hls, reason: '纠正后的 kind 必须持久化');
+
+    await rec.dispose();
+    await engine.dispose();
+  });
+
+  test('22. 进度节流：200 个快速分块折叠为少量事件，单调且终值正确', () async {
+    const chunkCount = 200;
+    const chunkSize = 1024;
+    const total = chunkCount * chunkSize;
+    final adapter = _FakeAdapter((o, c) async {
+      if (o.method == 'HEAD') {
+        return _bytesBody(200, const [], headers: {
+          'content-length': ['$total'],
+          'etag': ['"v1"'],
+          'accept-ranges': ['bytes'],
+        });
+      }
+      Stream<Uint8List> chunks() async* {
+        for (var i = 0; i < chunkCount; i++) {
+          yield Uint8List.fromList(List.filled(chunkSize, i & 0xff));
+        }
+      }
+
+      return ResponseBody(chunks(), 200, headers: {
+        'content-length': ['$total'],
+      });
+    });
+    final store = MemoryTaskStore();
+    final engine = DownloadEngine(
+      store: store,
+      mp4Downloader: _mp4Dl(adapter),
+      hlsDownloader: _hlsDl(_idleAdapter()),
+      remuxer: _FakeRemuxer(),
+    );
+    final rec = _Recorder(engine);
+
+    engine.submit(_task('t22',
+        kind: SourceKind.mp4, url: 'https://cdn/a.mp4', dir: mkDir('t22')));
+    await rec.wait('t22', TaskStatus.completed);
+
+    // running 且 downloadedBytes>0 的事件 = 放行的进度提交。
+    // 200 个分块背靠背到达，每多放行一个事件需要 ≥100ms 间隔：出现 20 个
+    // 事件意味着内存流花了 ≥1.9s，不可能——上界宽松而确定，不依赖具体时序。
+    final progressEvents = rec.events
+        .where((e) =>
+            e.taskId == 't22' &&
+            e.status == TaskStatus.running &&
+            e.downloadedBytes > 0)
+        .toList();
+    expect(progressEvents, isNotEmpty);
+    expect(progressEvents.length, lessThanOrEqualTo(20),
+        reason: '200 个分块的进度应被节流折叠');
+    for (var i = 1; i < progressEvents.length; i++) {
+      expect(progressEvents[i].downloadedBytes,
+          greaterThanOrEqualTo(progressEvents[i - 1].downloadedBytes),
+          reason: '进度应单调不减');
+    }
+    // 终态回填不受节流影响：完成时字节即 mp4 实际大小。
+    final t = engine.tasks['t22']!;
+    expect(t.downloadedBytes, total);
+    expect(t.totalBytes, total);
+    expect(File(t.mp4Path!).lengthSync(), total);
+
+    await rec.dispose();
+    await engine.dispose();
+  });
+
+  test('23. remuxing 进度：totalBytes=分片总输入字节，期间有递增进度，完成回填 mp4 字节',
+      () async {
+    final remuxer = _FakeRemuxer(reportProgress: true);
+    final store = MemoryTaskStore();
+    final engine = DownloadEngine(
+      store: store,
+      mp4Downloader: _mp4Dl(_idleAdapter()),
+      hlsDownloader: _hlsDl(_hlsAdapter()),
+      remuxer: remuxer,
+    );
+    final rec = _Recorder(engine);
+
+    engine.submit(_task('t23',
+        kind: SourceKind.hls,
+        url: 'https://cdn/hls/index.m3u8',
+        dir: mkDir('t23')));
+    await rec.wait('t23', TaskStatus.completed);
+
+    // 3 片 × 10 字节：进 remuxing 时 totalBytes 应为分片总输入字节 30。
+    final remuxEvents = rec.events
+        .where((e) => e.taskId == 't23' && e.status == TaskStatus.remuxing)
+        .toList();
+    expect(remuxEvents, isNotEmpty);
+    expect(remuxEvents.every((e) => e.totalBytes == 30), isTrue,
+        reason: 'remuxing 期间 totalBytes 应为分片总输入字节');
+    expect(remuxEvents.first.downloadedBytes, 0,
+        reason: '进入 remuxing 的状态提交应从 0 开始');
+    // 换阶段重开节流窗口：remux 的首笔进度必然放行。
+    expect(remuxEvents.any((e) => e.downloadedBytes == 15), isTrue,
+        reason: 'remux 期间应观察到真实进度');
+
+    // 完成回填：终态 downloadedBytes == totalBytes == mp4 文件大小。
+    final t = engine.tasks['t23']!;
+    expect(t.status, TaskStatus.completed);
+    expect(File(t.mp4Path!).lengthSync(), 4);
+    expect(t.downloadedBytes, 4);
+    expect(t.totalBytes, 4);
 
     await rec.dispose();
     await engine.dispose();

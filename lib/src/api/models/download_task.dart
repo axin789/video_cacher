@@ -13,8 +13,15 @@ class DownloadTask {
   final String dir;
   final SourceKind kind;
   final TaskStatus status;
+
+  /// 进度量纲随阶段变化（[progress] 恒为 0..1）：mp4 下载阶段为字节；
+  /// HLS 下载阶段为分片数；remuxing 阶段为 remux 输入字节（第二段 0..1 进度）；
+  /// completed 后回填为最终 mp4 文件字节数（终态单位真实）。
   final int totalBytes;
+
+  /// 已完成量，量纲同 [totalBytes]。
   final int downloadedBytes;
+
   final String? mp4Path;
 
   /// mp4 断点续传用的资源 ETag（HEAD 返回时即持久化，冷启动后仍可校验内容未变）。

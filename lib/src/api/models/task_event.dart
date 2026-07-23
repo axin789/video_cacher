@@ -2,6 +2,9 @@ import 'download_task.dart';
 import 'task_status.dart';
 
 /// 对外事件快照，通过 broadcast stream 抛出，与内部 [DownloadTask] 解耦。
+///
+/// 纯进度事件按任务节流（约 10 次/秒），状态变更事件即时；
+/// downloadedBytes/totalBytes 的量纲随阶段变化，见 [DownloadTask.totalBytes]。
 class TaskEvent {
   final String taskId;
   final TaskStatus status;

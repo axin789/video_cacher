@@ -53,6 +53,12 @@ class DownloadEngine {
   final Map<String, DownloadTask> _tasks = {};
   final Map<String, CancelToken> _tokens = {};
 
+  /// 纯进度提交的节流窗口（毫秒）：每任务最多 10 次/秒，状态变更不受限。
+  static const int _progressIntervalMs = 100;
+
+  /// 每任务最近一次放行的进度提交时间戳（[_progressIntervalMs] 节流用）。
+  final Map<String, int> _lastProgressMs = {};
+
   /// 每个活跃/收尾中任务的最近一次显式意图。见 [_Intent]。
   final Map<String, _Intent> _pendingIntent = {};
 
@@ -200,6 +206,7 @@ class DownloadEngine {
     }
     _tokens.clear();
     _pendingIntent.clear();
+    _lastProgressMs.clear();
     await _store.close();
     await _events.close();
   }
@@ -240,6 +247,7 @@ class DownloadEngine {
       }
     } finally {
       _tokens.remove(taskId);
+      _lastProgressMs.remove(taskId);
       final pending = _pendingIntent[taskId] ?? _Intent.none;
       _queue.onDone(taskId); // 归还槽位，泵下一个
       final cur = _tasks[taskId];
@@ -291,12 +299,14 @@ class DownloadEngine {
     final pending = _pendingIntent[taskId] ?? _Intent.none;
     if (cur.status == TaskStatus.canceled || pending == _Intent.cancel) return;
     if (cur.status == TaskStatus.paused || pending == _Intent.pause) return;
+    // 终态字节以磁盘产物为准（回填），保证 downloadedBytes/totalBytes 单位真实。
+    final mp4Size = File(result.mp4Path).lengthSync();
     _commit(cur.copyWith(
       status: TaskStatus.completed,
       mp4Path: result.mp4Path,
       url: result.finalUrl,
-      totalBytes: result.totalBytes,
-      downloadedBytes: result.totalBytes,
+      totalBytes: mp4Size,
+      downloadedBytes: mp4Size,
       etag: result.etag,
       error: null,
     ));
@@ -318,9 +328,17 @@ class DownloadEngine {
     var pending = _pendingIntent[taskId] ?? _Intent.none;
     if (cur.status == TaskStatus.canceled || pending == _Intent.cancel) return;
     if (cur.status == TaskStatus.paused || pending == _Intent.pause) return;
+    // remuxing 阶段的进度是「第二段 0..1」：totalBytes 换算为分片总输入字节，
+    // remuxer 每喂完一片回报累计字节（见 Remuxer.onProgress 语义）。
+    var totalIn = 0;
+    for (final f in result.segmentFiles) {
+      totalIn += File(f).lengthSync();
+    }
     _commit(cur.copyWith(
       status: TaskStatus.remuxing,
       url: result.finalEntryUrl,
+      downloadedBytes: 0,
+      totalBytes: totalIn,
     ));
 
     final outMp4 = p.join(task.dir, 'video.mp4');
@@ -329,10 +347,12 @@ class DownloadEngine {
       segmentFiles: result.segmentFiles,
       outMp4: outMp4,
       dir: task.dir,
+      onProgress: (fed) => _onProgress(taskId, fed, totalIn),
     );
 
-    // remux 不吃 CancelToken，取消经 _remuxer.cancel(taskId) 软停。返回后必须重读
-    // 当前状态/意图：期间被 pause/cancel 过就尊重该终态，绝不用 completed 覆盖。
+    // remux 不吃 CancelToken，取消经 _remuxer.cancel(taskId) 强停 worker。
+    // 返回后必须重读当前状态/意图：期间被 pause/cancel 过就尊重该终态，
+    // 绝不用 completed 覆盖。
     cur = _tasks[taskId];
     if (cur == null) return;
     pending = _pendingIntent[taskId] ?? _Intent.none;
@@ -342,9 +362,14 @@ class DownloadEngine {
     if (res.ok) {
       final finalMp4 = res.outMp4 ?? outMp4;
       await _remuxer.cleanup(dir: task.dir, outMp4: finalMp4, success: true);
+      // 终态字节以磁盘产物为准（回填）：HLS 全程的分片数/输入字节到此换算成
+      // 真实 mp4 字节，downloadedBytes/totalBytes 单位不再骗人。
+      final mp4Size = File(finalMp4).lengthSync();
       _commit(cur.copyWith(
         status: TaskStatus.completed,
         mp4Path: finalMp4,
+        downloadedBytes: mp4Size,
+        totalBytes: mp4Size,
         error: null,
       ));
     } else {
@@ -355,10 +380,17 @@ class DownloadEngine {
     }
   }
 
-  /// 进度回调：只更新内存 + upsert（存储自带去抖，不会写盘风暴）+ 广播事件。
+  /// 进度回调：节流后更新内存 + upsert + 广播事件。
+  ///
+  /// 每任务每 [_progressIntervalMs] 最多放行一次，窗口内的中间值直接丢弃
+  /// （下一拍自带最新值，终态提交会显式回填字节，不会丢最终进度）。
   void _onProgress(String taskId, int downloaded, int total) {
     final cur = _tasks[taskId];
     if (cur == null) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final last = _lastProgressMs[taskId];
+    if (last != null && now - last < _progressIntervalMs) return;
+    _lastProgressMs[taskId] = now;
     _commit(cur.copyWith(
       downloadedBytes: downloaded,
       totalBytes: total > 0 ? total : cur.totalBytes,
@@ -375,6 +407,8 @@ class DownloadEngine {
           'task ${next.taskId}: ${prev?.status.name ?? 'new'} -> '
           '${next.status.name}'
           '${next.status == TaskStatus.failed ? ' | ${next.error}' : ''}');
+      // 换阶段即重开节流窗口：新阶段的首个进度立即可见。
+      _lastProgressMs.remove(next.taskId);
     }
     _tasks[next.taskId] = next;
     // 忽略写入错误：dispose 关闭 store 后仍可能有活跃 worker 触发 upsert，
