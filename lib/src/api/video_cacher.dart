@@ -29,6 +29,9 @@ class VideoCacher {
 
   bool _inited = false;
 
+  /// 初始化在飞 Future：并发调用共享同一次初始化，防止双重装配。
+  Future<void>? _initFuture;
+
   late HttpClient _http;
   late UrlRefresher _refresher;
   late JsonTaskStore _store;
@@ -52,9 +55,11 @@ class VideoCacher {
   StreamSubscription<TaskEvent>? _eventSub;
 
   /// 幂等初始化。默认取应用文档目录为根，装配全链路并加载既有任务。
-  Future<void> ensureInitialized({DownloadConfig config = const DownloadConfig()}) async {
-    if (_inited) return;
+  /// 并发调用共享同一次初始化，config 以第一个调用者为准。
+  Future<void> ensureInitialized({DownloadConfig config = const DownloadConfig()}) =>
+      _initFuture ??= _doInit(config);
 
+  Future<void> _doInit(DownloadConfig config) async {
     _baseDir = await getApplicationDocumentsDirectory();
     _rootDir = p.join(_baseDir.path, 'video_cacher');
 
@@ -173,6 +178,7 @@ class VideoCacher {
     await _engine.dispose();
     _http.close();
     _inited = false;
+    _initFuture = null;
   }
 
   /// 手动把某任务的 mp4 存相册。

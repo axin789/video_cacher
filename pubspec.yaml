@@ -29,3 +29,5 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
+  # 测试里替换 PathProviderPlatform.instance，免 mock 平台通道。
+  path_provider_platform_interface: ^2.1.0
