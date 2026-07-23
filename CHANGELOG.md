@@ -1,3 +1,44 @@
+## 0.3.0
+
+真机实测「处理中」阶段 98% 的时间花在 AES 解密上，本版把这一步交给系统加密库。
+
+### 行为变更（升级注意）
+
+- **本包重新成为 Flutter plugin**（0.2.x 是纯 Dart package）。新增的原生代码
+  只有一个 Kotlin 文件和一个 Swift 文件，**不捆绑任何二进制**——没有 `.so`、
+  没有 `.xcframework`、没有 vendored framework，只调用系统 API，包体积影响可忽略。
+- **升级后必须完整重建**（`flutter clean` 后重新安装），热重载/增量安装不会
+  带上新插件；没带上也不会坏，只是继续走纯 Dart 慢路径。
+- `environment.flutter` 提升到 `>=3.7.0`（背景 isolate 用平台通道所需的
+  `BackgroundIsolateBinaryMessenger` 自 3.7 起提供）。
+
+### 性能
+
+- **HLS AES-128 解密改用系统硬件 AES**：Android 走 `javax.crypto.Cipher`
+  （Conscrypt → BoringSSL），iOS 走 `CommonCrypto` 的 `CCCrypt`，两者都吃
+  ARMv8 的 AES 指令。真机上纯 Dart 实测约 1MB/s（已 3 路 isolate 并行），
+  系统库是 500-2000MB/s 量级。433MB 加密视频的实测基线为
+  `phases: decryptWait=400425ms demux=6524ms build=1866ms`（解密占 98%），
+  预期整个「处理中」阶段从约 409s 降到 10s 级，解密不再是瓶颈。
+- 解密不再为每片 spawn 子 isolate：系统库自带原生后台线程（Android 固定线程池、
+  iOS 后台 `DispatchQueue`），平台线程与 UI 线程都不阻塞；前瞻预取流水线与
+  内存上界维持不变。
+
+### 兜底与正确性
+
+- **平台不可用时自动退回纯 Dart**（pointycastle），语义完全不变：无原生实现的
+  平台（macOS/桌面）、`flutter test`、拿不到 `RootIsolateToken` 的场景都走兜底。
+- 主 isolate 在 remux 前用一个固定的 openssl 向量做**一次性能力探测**（同时校验
+  PKCS7 去填充语义一致），结果缓存到进程结束；探测不过就整轮纯 Dart，不会为每片
+  白付一次通道往返。单片解密失败只退回这一片，不永久关掉硬件路径。
+- 产物**逐字节一致**：纯 Dart 路径的 golden sha256 未变
+  （`bb987871e8b68c367c3b00149dfe7d69ee9a315e2f3323c2c01040ab0535ffd7`），
+  另新增真机 integration test（`example/integration_test/platform_aes_test.dart`）
+  在 0B~1MB 各种长度上逐字节比对两条路径，并覆盖背景 isolate 的通道路径。
+- 日志新增解密后端标记，真机一眼可见走的是哪条路：
+  `[video_cacher.crypto] AES backend: platform(hardware)` 或
+  `... dart(software fallback)`；原有的 `phases:` 耗时行保留，收益可直接量化。
+
 ## 0.2.1
 
 真机接入实测（yc169）暴露的四个问题的修复版。
