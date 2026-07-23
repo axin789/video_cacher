@@ -1,7 +1,7 @@
 import 'dart:developer' as dev;
 
 /// 下载链路（引擎/刷新器/HLS/MP4）的结构化日志开关。
-/// transmuxer 的日志另由 `DartTransmuxer.verbose` 控制。
+/// transmuxer 的日志同样受本开关控制。
 class VideoCacherLog {
   VideoCacherLog._();
 

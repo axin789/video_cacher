@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:video_cacher/src/log.dart';
 import 'package:video_cacher/src/remux/dart_transmuxer/dart_transmuxer.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -98,7 +99,7 @@ void main() {
     late String outMp4;
 
     setUp(() async {
-      DartTransmuxer.verbose = false;
+      VideoCacherLog.verbose = false;
       tmp = await Directory.systemTemp.createTemp('transmux_test_');
       outMp4 = '${tmp.path}/out.mp4';
     });

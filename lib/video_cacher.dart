@@ -5,3 +5,4 @@ export 'src/api/models/task_status.dart'; // TaskStatus, SourceKind
 export 'src/api/models/task_event.dart';
 export 'src/api/models/download_config.dart';
 export 'src/album/album_saver.dart'; // AlbumSaveResult
+export 'src/log.dart'; // VideoCacherLog.verbose 日志开关

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 
+import '../../log.dart';
 import '../remuxer.dart';
 import 'aac_adts.dart';
 import 'h264_parser.dart';
@@ -25,15 +26,13 @@ class UnsupportedStreamException implements Exception {
 /// 逐分片喂入解复用器，抽取视频访问单元与音频 ADTS 帧，重写为 ISO-BMFF。
 /// 时间基线 / edit list / ctts 逻辑复刻已 framemd5 验证的原型。
 class DartTransmuxer implements Remuxer {
-  /// 日志开关，默认开启，方便联调时观察；可后续静音。
-  static bool verbose = true;
-
   static const String _logName = 'video_cacher.transmux';
 
   final Set<String> _canceled = {};
 
+  /// 日志统一走 [VideoCacherLog.verbose] 开关（已从包入口导出，宿主可静音）。
   void _log(String msg) {
-    if (verbose) developer.log(msg, name: _logName);
+    if (VideoCacherLog.verbose) developer.log(msg, name: _logName);
   }
 
   @override
@@ -54,7 +53,10 @@ class DartTransmuxer implements Remuxer {
       return RemuxResult(ok: false, error: e.toString());
     } catch (e, st) {
       _log('error: $e');
-      developer.log('transmux failed', name: _logName, error: e, stackTrace: st);
+      if (VideoCacherLog.verbose) {
+        developer.log('transmux failed',
+            name: _logName, error: e, stackTrace: st);
+      }
       return RemuxResult(ok: false, error: e.toString());
     }
   }

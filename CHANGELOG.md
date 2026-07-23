@@ -7,6 +7,8 @@
 - MP4 下载嗅探响应首块，m3u8 播放列表文本不再被误存成视频成片。
 - 补齐 completed 状态守卫（pause/cancel 不再降级已完成任务）与完成提交前的取消/暂停意图复查。
 - `ensureInitialized` 增加在飞守卫，并发调用不再双重初始化；`dispose` 顺序修正（先停引擎再关 HTTP）。
+- 日志开关统一为 `VideoCacherLog.verbose` 并从包入口导出，宿主可一键静音全部日志。
+- pointycastle 改为按需导入，减小 AOT 产物体积。
 
 ## 0.1.0
 
