@@ -143,10 +143,21 @@ class Mp4Downloader {
       mode: resuming ? FileMode.writeOnlyAppend : FileMode.writeOnly,
     );
     var written = writeOffset;
+    // 仅全新写（offset 0）嗅探首个分块是否 m3u8 文本，续传跳过。
+    var sniff = writeOffset == 0;
+    var aborted = false;
     try {
       final stream = resp.data?.stream;
       if (stream != null) {
         await for (final chunk in stream) {
+          if (sniff) {
+            sniff = false;
+            if (_looksLikeM3u8(chunk)) {
+              // 播放列表文本被当 mp4 下（源类型误判）：中止并清 .part，不落成片。
+              aborted = true;
+              throw StateError('URL 内容是 m3u8 播放列表而非视频（源类型误判）');
+            }
+          }
           sink.writeFromSync(chunk);
           written += chunk.length;
           onProgress(written, total > 0 ? total : written);
@@ -154,6 +165,7 @@ class Mp4Downloader {
       }
     } finally {
       sink.closeSync();
+      if (aborted && part.existsSync()) part.deleteSync();
     }
 
     final resolvedTotal = total > 0 ? total : written;
@@ -201,5 +213,31 @@ class Mp4Downloader {
       return resuming ? writeOffset + cl : cl;
     }
     return headTotal ?? 0;
+  }
+
+  /// 首个分块是否为 m3u8 播放列表文本：跳过可选 UTF-8 BOM 与少量空白后以
+  /// #EXTM3U 开头。最多看前 16 字节左右，代价可忽略。
+  static bool _looksLikeM3u8(List<int> chunk) {
+    var i = 0;
+    if (chunk.length >= 3 &&
+        chunk[0] == 0xEF &&
+        chunk[1] == 0xBB &&
+        chunk[2] == 0xBF) {
+      i = 3;
+    }
+    while (i < chunk.length &&
+        i < 16 &&
+        (chunk[i] == 0x20 ||
+            chunk[i] == 0x09 ||
+            chunk[i] == 0x0D ||
+            chunk[i] == 0x0A)) {
+      i++;
+    }
+    const sig = '#EXTM3U';
+    if (chunk.length - i < sig.length) return false;
+    for (var j = 0; j < sig.length; j++) {
+      if (chunk[i + j] != sig.codeUnitAt(j)) return false;
+    }
+    return true;
   }
 }

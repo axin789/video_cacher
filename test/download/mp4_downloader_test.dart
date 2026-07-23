@@ -282,4 +282,26 @@ void main() {
     expect(File(part).existsSync(), isTrue);
     expect(File(part).readAsBytesSync(), first);
   });
+
+  test('8. 响应体是 m3u8 文本：中止下载抛 StateError，不留 dest 与 .part', () async {
+    const playlist = '#EXTM3U\n#EXTINF:4.0,\nseg0.ts\n#EXT-X-ENDLIST\n';
+    final adapter = _FakeAdapter((o) async {
+      if (o.method == 'HEAD') {
+        return _bytesBody(200, const [], headers: {
+          'content-length': ['${playlist.length}'],
+          'accept-ranges': ['bytes'],
+        });
+      }
+      return _bytesBody(200, playlist.codeUnits);
+    });
+    final dl = _downloader(adapter);
+
+    await expectLater(
+      dl.download(taskId: 't8', url: 'https://cdn/fake.mp4', destPath: dest),
+      throwsA(isA<StateError>()),
+    );
+
+    expect(File(dest).existsSync(), isFalse);
+    expect(File(part).existsSync(), isFalse);
+  });
 }
