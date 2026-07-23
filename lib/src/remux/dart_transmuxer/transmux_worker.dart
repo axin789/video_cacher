@@ -67,6 +67,11 @@ const int _feedChunkSize = 16 * 1024;
 /// 分片准备前瞻数：喂第 i 片时，第 i+1..i+_prepareAhead 片的读盘/解密已在路上。
 const int _prepareAhead = 2;
 
+/// 前瞻的字节预算：在飞分片的磁盘字节总和超过它就不再补位（但至少保证 1 片在飞，
+/// 否则流水线停摆）。HLS 分片通常 2-10MB，前瞻按片数即可；个别源单片可达数十 MB，
+/// 仅按片数会让峰值内存跟着分片大小走，这里用字节数封顶。
+const int _prefetchByteBudget = 24 * 1024 * 1024;
+
 /// 准备一个分片：明文片整片读入（不 spawn 子 isolate——无加密输入时流水线
 /// 只是按片读盘，无额外开销）；加密片的「读 + 解密」整体放子 isolate。
 /// diskBytes 为磁盘文件字节数——进度按它累计，与引擎按文件长度算的
@@ -235,15 +240,32 @@ Future<int> _pipeline(TransmuxRequest req) async {
       // （≤ _prepareAhead 片解密），不做额外处理。
       final crypto = req.crypto;
       final pending = <Future<({Uint8List plain, int diskBytes})>>[];
+      final pendingBytes = <int>[]; // 与 pending 一一对应的磁盘字节数
       var nextPrepare = 0;
+      var inFlightBytes = 0;
       void pump() {
         while (nextPrepare < segmentFiles.length &&
             pending.length <= _prepareAhead) {
+          // 仅用于预算估算：取不到大小（文件缺失等）按 0 计，真正的读错误仍在
+          // 消费该片时抛出，不因预取而提前改变失败时机。
+          int size;
+          try {
+            size = File(segmentFiles[nextPrepare]).lengthSync();
+          } catch (_) {
+            size = 0;
+          }
+          // 片数与字节数双闸门：预算用满就停，但空队列时必须放行一片保证推进。
+          if (pending.isNotEmpty &&
+              inFlightBytes + size > _prefetchByteBudget) {
+            break;
+          }
           final f = _prepareSegment(segmentFiles[nextPrepare++], crypto);
           // 错误留到消费该片时经 await 抛出；不先挂 ignore 会被判定为未处理
           // 异步错误（Future 可多次监听，错误仍会送达之后的 await）。
           f.ignore();
           pending.add(f);
+          pendingBytes.add(size);
+          inFlightBytes += size;
         }
       }
 
@@ -264,7 +286,9 @@ Future<int> _pipeline(TransmuxRequest req) async {
 
       pump(); // 启动第 0..=_prepareAhead 片的准备
       while (pending.isNotEmpty) {
-        await feedSegment(await pending.removeAt(0));
+        final next = pending.removeAt(0);
+        inFlightBytes -= pendingBytes.removeAt(0);
+        await feedSegment(await next);
         pump(); // 当前片明文已随 feedSegment 返回可回收，再补位下一片
       }
       demux.finish();
