@@ -28,6 +28,10 @@ class DownloadConfig {
   /// 单次刷新回调超时：回调挂起超过此时长按该次尝试失败处理。
   final Duration refreshTimeout;
 
+  /// 视为「直链过期，需刷新 URL」的 HTTP 状态码。
+  /// 部分 CDN 用 401/403 表示签名/token 过期，故默认全部纳入。
+  final Set<int> refreshStatusCodes;
+
   const DownloadConfig({
     this.maxConcurrency = 3,
     this.segConcurrency = 2,
@@ -38,6 +42,7 @@ class DownloadConfig {
     this.refreshMaxRetries = 3,
     this.refreshBackoff = const Duration(milliseconds: 500),
     this.refreshTimeout = const Duration(seconds: 30),
+    this.refreshStatusCodes = const {401, 403, 404, 410},
   });
 
   /// 复制并覆盖部分字段。
@@ -51,6 +56,7 @@ class DownloadConfig {
     int? refreshMaxRetries,
     Duration? refreshBackoff,
     Duration? refreshTimeout,
+    Set<int>? refreshStatusCodes,
   }) {
     return DownloadConfig(
       maxConcurrency: maxConcurrency ?? this.maxConcurrency,
@@ -62,6 +68,7 @@ class DownloadConfig {
       refreshMaxRetries: refreshMaxRetries ?? this.refreshMaxRetries,
       refreshBackoff: refreshBackoff ?? this.refreshBackoff,
       refreshTimeout: refreshTimeout ?? this.refreshTimeout,
+      refreshStatusCodes: refreshStatusCodes ?? this.refreshStatusCodes,
     );
   }
 }

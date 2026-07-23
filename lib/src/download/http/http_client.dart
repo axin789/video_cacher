@@ -47,7 +47,8 @@ class HeadInfo {
 /// dio 的薄封装，供下载器使用。
 ///
 /// 约定：
-/// - 404/410 一律翻译成 [UrlExpiredException] 冒泡给上层（触发 URL 刷新），**不重试**。
+/// - 命中 [DownloadConfig.refreshStatusCodes]（默认 401/403/404/410）翻译成
+/// [UrlExpiredException] 冒泡给上层（触发 URL 刷新），**不重试**。
 /// - 连接/超时错误与 5xx 做有限次退避重试（[_maxTransientRetries]）。
 /// - 其它 4xx 抛 [HttpStatusException]。
 /// - 取消（CancelToken）直接冒泡，不重试。
@@ -175,7 +176,7 @@ class HttpClient {
       try {
         final resp = await run();
         final code = resp.statusCode ?? 0;
-        if (code == 404 || code == 410) {
+        if (_config.refreshStatusCodes.contains(code)) {
           throw UrlExpiredException(code, url);
         }
         if (code >= 200 && code < 400) {
@@ -197,8 +198,8 @@ class HttpClient {
       } on DioException catch (e) {
         // 注入的 dio 若用默认 validateStatus，非 2xx 会走这里。
         final code = e.response?.statusCode;
-        if (code == 404 || code == 410) {
-          throw UrlExpiredException(code!, url);
+        if (code != null && _config.refreshStatusCodes.contains(code)) {
+          throw UrlExpiredException(code, url);
         }
         if (_isTransient(e) && attempt < _maxTransientRetries) {
           lastError = e;

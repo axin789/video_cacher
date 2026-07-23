@@ -90,6 +90,29 @@ HttpClient _clientWith(
 }
 
 void main() {
+  group('HttpClient refreshStatusCodes -> UrlExpiredException', () {
+    test('403 默认视为过期（部分 CDN 用 403 表示 token 过期）', () {
+      final c = _clientWith(403);
+      expect(
+        c.getBytes('https://cdn/x.m3u8'),
+        throwsA(isA<UrlExpiredException>()
+            .having((e) => e.statusCode, 'statusCode', 403)),
+      );
+    });
+
+    test('自定义集合可排除 403 -> 走 HttpStatusException', () {
+      final dio = Dio()..httpClientAdapter = _FakeAdapter(403);
+      final c = HttpClient(
+        const DownloadConfig(refreshStatusCodes: {404, 410}),
+        dio: dio,
+      );
+      expect(
+        c.getBytes('https://cdn/x.m3u8'),
+        throwsA(isA<HttpStatusException>()),
+      );
+    });
+  });
+
   group('HttpClient 404/410 -> UrlExpiredException', () {
     test('getBytes 404（默认 validateStatus，走 DioException 分支）', () {
       final c = _clientWith(404);
@@ -155,8 +178,9 @@ void main() {
   });
 
   group('HttpClient 其它状态码', () {
-    test('403 抛 HttpStatusException（非 UrlExpired，不重试）', () {
-      final c = _clientWith(403);
+    // 403 已默认归入过期刷新集合，这里用 400 验证「其它 4xx 不刷新不重试」。
+    test('400 抛 HttpStatusException（非 UrlExpired，不重试）', () {
+      final c = _clientWith(400);
       expect(
         c.getBytes('https://cdn/x.m3u8'),
         throwsA(isA<HttpStatusException>()),
