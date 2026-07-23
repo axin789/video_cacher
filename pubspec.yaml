@@ -1,6 +1,6 @@
 name: video_cacher
 description: Offline video cache for Flutter - mp4/HLS(m3u8) download with resume, AES-128, pure-Dart remux to mp4, album export. 离线视频缓存：断点续传、纯 Dart 转封装、相册保存。
-version: 0.1.1
+version: 0.2.0
 homepage: https://github.com/doubledog789/video_cacher
 repository: https://github.com/doubledog789/video_cacher
 issue_tracker: https://github.com/doubledog789/video_cacher/issues

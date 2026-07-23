@@ -1,3 +1,44 @@
+## 0.2.0
+
+### 修复
+
+- 转封装流兼容性：ADTS 音频帧跨 PES 包拼接、视频访问单元续包合并、PSI(PAT/PMT)
+  跨 TS 包积累、截断 PES 防护——此前会丢帧或产出坏 mp4 的真实流现可正确转封装。
+- 时间戳与盒健壮性：PTS/DTS 33 位环绕展开、pts<dts 非法时间戳钳制（DTS 平移）、
+  全关键帧流省略空 stss、音频 tkhd duration 时基单位修正。
+- HLS 播放列表按 UTF-8（含 BOM）解码，修复非 ASCII 播放列表的幽灵分片与
+  URL 双重编码。
+- mp4 断点续传语义修正：资源 ETag 随任务持久化，If-Range 携带旧 etag（弱 etag
+  不发），服务端内容变更自动从 0 重下，416 + 总长未知可自动恢复。
+- mp4 下载流中途瞬断按 Range 有限重试（≤2 次），不再直接 failed。
+- 源类型误判自愈：mp4 任务嗅探到 m3u8 内容自动纠正为 HLS 并同轮完成；
+  源嗅探只拉取前 64 字节。
+- URL 刷新后 HLS 变体按带宽锁定，续传不再混入其他码率。
+- 多音轨流优选 AAC 音轨，不再因选中不支持的音轨而失败。
+- 引擎：清理非活跃任务的暂停/取消意图残留（内存小泄漏）。
+
+### 性能
+
+- mdat 流式落盘：remux 内存峰值降至约 1.1~2.3 倍输入（100MB 输入 5.83x→2.27x，
+  200MB 1.64x）。
+- remux 移入独立 isolate：主线程零冻结，逐分片真实进度，取消经 Isolate.kill
+  立即生效。
+- HLS AES-128 解密每片走 Isolate.run，不再阻塞 UI。
+- 进度事件按任务节流（100ms 窗口），高频分块不再刷爆事件流。
+
+### 行为变更（升级注意）
+
+- **进度字段量纲分阶段**：`downloadedBytes`/`totalBytes` 在 mp4 下载阶段为字节、
+  HLS 下载阶段为分片数、remuxing 阶段为 remux 输入字节（第二段 0..1）；
+  **completed 终态统一回填为最终 mp4 文件字节数**。依赖旧语义的 UI 需检查。
+- **不支持的播放列表特性从静默产坏数据变为明确失败**：SAMPLE-AES 等非 AES-128
+  加密、key 轮换、EXT-X-MAP(fMP4)、EXT-X-BYTERANGE、EXT-X-DISCONTINUITY
+  在下载任何分片前即 failed（`UnsupportedPlaylistException`）。
+- **h265 等不支持编码 fail-fast**：remux 在首个含 PMT 的分片即报错并列出全部
+  stream_type，不再空跑完全部分片再失败。
+- `Remuxer.onProgress` 语义变更：回调参数为已喂入的累计输入字节（此前无真实进度）。
+- `DownloadTask` 新增 `etag` 字段（JSON 持久化向后兼容，旧记录读出为 null）。
+
 ## 0.1.1
 
 - 修复门面未使用按配置构建的 Dio 导致超时/User-Agent 失效（生产环境无任何超时）。
