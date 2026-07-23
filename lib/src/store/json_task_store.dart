@@ -10,6 +10,7 @@ import 'task_store.dart';
 /// - 每条任务持久化到 `<baseDir>/tasks/<taskId>.json`。
 /// - 写入先落 `.tmp` 再 `rename`，保证同盘原子替换。
 /// - 状态变更立即刷盘；纯进度更新按 [debounceInterval] 去抖合并。
+/// - 同一任务的落盘/删除经串行链按序执行；close 后的写入/删除被忽略。
 ///
 /// 纯 Dart 实现，不依赖 path_provider —— 基目录由调用方注入，便于单测。
 class JsonTaskStore implements TaskStore {
@@ -27,7 +28,29 @@ class JsonTaskStore implements TaskStore {
   final Map<String, DownloadTask> _tasks = {};
   final Map<String, Timer> _timers = {};
 
+  /// 每任务的串行操作链尾：同一 taskId 的磁盘操作按入队顺序执行。
+  final Map<String, Future<void>> _chain = {};
+
   bool _dirEnsured = false;
+  bool _closed = false;
+  int _seq = 0;
+
+  /// 把磁盘操作追加到该任务的串行链尾并返回新链尾。
+  /// 操作异常在链内吞掉：链不断、也不逃逸到根 zone。
+  Future<void> _enqueue(String taskId, Future<void> Function() op) {
+    final tail = (_chain[taskId] ?? Future<void>.value()).then((_) async {
+      try {
+        await op();
+      } catch (_) {
+        // 落盘失败不影响链上后续操作。
+      }
+    });
+    _chain[taskId] = tail;
+    tail.whenComplete(() {
+      if (identical(_chain[taskId], tail)) _chain.remove(taskId);
+    });
+    return tail;
+  }
 
   Future<void> _ensureDir() async {
     if (_dirEnsured) return;
@@ -52,7 +75,8 @@ class JsonTaskStore implements TaskStore {
   Future<void> _writeAtomic(DownloadTask task) async {
     await _ensureDir();
     final file = _fileFor(task.taskId);
-    final tmp = File('${file.path}.tmp');
+    // 链内已串行，唯一 tmp 名仅防多实例同名互踩。
+    final tmp = File('${file.path}.${_seq++}.tmp');
     await tmp.writeAsString(jsonEncode(task.toJson()), flush: true);
     await tmp.rename(file.path);
   }
@@ -77,45 +101,76 @@ class JsonTaskStore implements TaskStore {
   @override
   Future<void> upsert(DownloadTask task) async {
     _guardId(task.taskId);
+    if (_closed) return;
     final previous = _tasks[task.taskId];
     _tasks[task.taskId] = task;
 
     final statusChanged = previous == null || previous.status != task.status;
     if (statusChanged) {
       _timers.remove(task.taskId)?.cancel();
-      await _writeAtomic(task);
+      await _enqueue(task.taskId, () => _writeAtomic(task));
       return;
     }
 
     // 纯进度更新：按 taskId 去抖，写入最新快照。
     _timers[task.taskId]?.cancel();
-    _timers[task.taskId] = Timer(debounceInterval, () async {
+    _timers[task.taskId] = Timer(debounceInterval, () {
       _timers.remove(task.taskId);
-      final latest = _tasks[task.taskId];
-      if (latest != null) await _writeAtomic(latest);
+      try {
+        _enqueue(task.taskId, () async {
+          final latest = _tasks[task.taskId];
+          if (latest != null) await _writeAtomic(latest);
+        });
+      } catch (_) {
+        // 兜底：任何异常都不逃逸到根 zone。
+      }
     });
   }
 
   @override
   Future<void> delete(String taskId) async {
     _guardId(taskId);
+    if (_closed) return;
     _timers.remove(taskId)?.cancel();
     _tasks.remove(taskId);
-    final file = _fileFor(taskId);
-    final tmp = File('${file.path}.tmp');
-    if (await file.exists()) await file.delete();
-    if (await tmp.exists()) await tmp.delete();
+    await _enqueue(taskId, () async {
+      try {
+        await _fileFor(taskId).delete();
+      } on FileSystemException {
+        // 不存在则忽略。
+      }
+      // 顺带清理该任务遗留的 tmp 文件（<id>.json.<seq>.tmp）。
+      try {
+        await for (final e in _tasksDir.list()) {
+          if (e is File && e.uri.pathSegments.last.startsWith('$taskId.json.')) {
+            try {
+              await e.delete();
+            } on FileSystemException {
+              // 忽略。
+            }
+          }
+        }
+      } on FileSystemException {
+        // 目录不存在则忽略。
+      }
+    });
   }
 
   @override
   Future<void> close() async {
-    final pending = _timers.keys.toList();
-    for (final id in pending) {
+    if (_closed) return;
+    // 先置位：close 开始后的新写入/删除一律忽略。
+    _closed = true;
+    final dirty = _timers.keys.toList();
+    for (final id in dirty) {
       _timers.remove(id)?.cancel();
     }
-    for (final id in pending) {
-      final task = _tasks[id];
-      if (task != null) await _writeAtomic(task);
+    for (final id in dirty) {
+      _enqueue(id, () async {
+        final task = _tasks[id];
+        if (task != null) await _writeAtomic(task);
+      });
     }
+    await Future.wait(_chain.values.toList());
   }
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -113,5 +114,86 @@ void main() {
 
     final loaded = await JsonTaskStore(baseDir).loadAll();
     expect(loaded, isEmpty);
+  });
+
+  test('back-to-back status writes: on-disk state equals the second', () async {
+    final store = JsonTaskStore(baseDir);
+    for (var i = 0; i < 50; i++) {
+      // 两次状态变更 upsert 背靠背发出（不逐个 await），模拟引擎 fire-and-forget。
+      final w1 = store.upsert(_task('a', status: TaskStatus.queued));
+      final w2 = store.upsert(_task('a', status: TaskStatus.running));
+      await w1;
+      await w2;
+      final onDisk = DownloadTask.fromJson(
+        jsonDecode(taskFile('a').readAsStringSync()) as Map<String, dynamic>,
+      );
+      expect(onDisk.status, TaskStatus.running, reason: 'iteration $i');
+    }
+  });
+
+  test('no ghost file after delete racing an in-flight upsert', () async {
+    final store = JsonTaskStore(baseDir);
+    for (var i = 0; i < 50; i++) {
+      final id = 'g$i';
+      // 状态变更 upsert 不 await（引擎 .ignore() 场景），紧接着 delete。
+      final w = store.upsert(_task(id, status: TaskStatus.running));
+      await store.delete(id);
+      await w;
+      expect(taskFile(id).existsSync(), isFalse, reason: 'iteration $i');
+      final leftovers = Directory('${baseDir.path}/tasks')
+          .listSync()
+          .where((e) => e.uri.pathSegments.last.startsWith('$id.json'))
+          .toList();
+      expect(leftovers, isEmpty, reason: 'iteration $i');
+    }
+  });
+
+  test('upsert/delete after close are ignored', () async {
+    final store = JsonTaskStore(
+      baseDir,
+      debounceInterval: const Duration(milliseconds: 20),
+    );
+    await store.close();
+    await store.upsert(_task('x', status: TaskStatus.running));
+    await store.delete('x');
+    // 等超过去抖间隔，确认也没有定时器落盘。
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    final tasksDir = Directory('${baseDir.path}/tasks');
+    expect(
+      !tasksDir.existsSync() || tasksDir.listSync().isEmpty,
+      isTrue,
+    );
+  });
+
+  test('debounced write racing delete: no zone error, no ghost, no throw',
+      () async {
+    var zoneErrors = 0;
+    var ghosts = 0;
+    var deleteThrew = 0;
+    final done = Completer<void>();
+    runZonedGuarded(() async {
+      for (var i = 0; i < 50; i++) {
+        final id = 'z$i';
+        final store = JsonTaskStore(baseDir, debounceInterval: Duration.zero);
+        await store.upsert(_task(id, status: TaskStatus.running));
+        // 纯进度更新 -> 去抖 Timer(0)。
+        await store.upsert(
+          _task(id, status: TaskStatus.running, downloadedBytes: 10),
+        );
+        await Future<void>.delayed(Duration.zero); // 让 timer 回调先跑起来
+        try {
+          await store.delete(id);
+        } catch (_) {
+          deleteThrew++;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 2));
+        if (taskFile(id).existsSync()) ghosts++;
+      }
+      done.complete();
+    }, (e, s) => zoneErrors++);
+    await done.future;
+    expect(zoneErrors, 0);
+    expect(ghosts, 0);
+    expect(deleteThrew, 0);
   });
 }
