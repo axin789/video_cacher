@@ -70,10 +70,18 @@ class HlsDownloader {
     var refreshes = 0;
     // 首次解析确定的期望分片总数：跨刷新保持不变，用于兜底"刷新后 playlist 变短"。
     int? expectedTotal;
+    // master 场景首次选定的变体：跨 URL 刷新锁定同一路（带宽/分辨率），
+    // 防止刷新后 argmax 选到别的码率、混拼不同码率的分片。
+    HlsVariant? lockedVariant;
 
     while (true) {
       try {
-        final media = await _resolveMediaPlaylist(currentEntry, cancelToken);
+        final (media, chosen) = await _resolveMediaPlaylist(
+          currentEntry,
+          cancelToken,
+          lockedVariant: lockedVariant,
+        );
+        lockedVariant ??= chosen;
         _ensureSupported(media);
         final segments = media.segments;
         if (segments.isEmpty) {
@@ -170,25 +178,47 @@ class HlsDownloader {
     }
   }
 
-  /// 取入口 m3u8，若为 master 则跟随 bestVariant 跳一次到 media playlist。
-  Future<M3u8Playlist> _resolveMediaPlaylist(
+  /// 取入口 m3u8，若为 master 则跟随所选变体跳一次到 media playlist。
+  /// 首次（[lockedVariant] 为 null）选带宽最高的一路；刷新后重解析时按锁定
+  /// 变体匹配（带宽+分辨率精确命中，否则带宽最接近）。返回 (playlist, 所选变体)。
+  Future<(M3u8Playlist, HlsVariant?)> _resolveMediaPlaylist(
     String entryUrl,
-    CancelToken? cancelToken,
-  ) async {
+    CancelToken? cancelToken, {
+    HlsVariant? lockedVariant,
+  }) async {
     final entryBytes = await _http.getBytes(entryUrl, cancelToken: cancelToken);
     var playlist =
         _parser.parse(_decodeText(entryBytes), baseUri: entryUrl);
+    HlsVariant? chosen;
 
     if (playlist.isMaster) {
-      final variant = playlist.bestVariant;
-      if (variant == null) {
+      chosen = lockedVariant == null
+          ? playlist.bestVariant
+          : _matchVariant(playlist.variants, lockedVariant);
+      if (chosen == null) {
         throw StateError('HLS master playlist 无可用变体: $entryUrl');
       }
       final mediaBytes =
-          await _http.getBytes(variant.uri, cancelToken: cancelToken);
-      playlist = _parser.parse(_decodeText(mediaBytes), baseUri: variant.uri);
+          await _http.getBytes(chosen.uri, cancelToken: cancelToken);
+      playlist = _parser.parse(_decodeText(mediaBytes), baseUri: chosen.uri);
     }
-    return playlist;
+    return (playlist, chosen);
+  }
+
+  /// 在新 master 里找回锁定的那路：带宽+分辨率精确命中优先，否则带宽差最小者。
+  static HlsVariant? _matchVariant(
+      List<HlsVariant> variants, HlsVariant locked) {
+    if (variants.isEmpty) return null;
+    for (final v in variants) {
+      if (v.bandwidth == locked.bandwidth && v.resolution == locked.resolution) {
+        return v;
+      }
+    }
+    return variants.reduce((a, b) =>
+        (b.bandwidth - locked.bandwidth).abs() <
+                (a.bandwidth - locked.bandwidth).abs()
+            ? b
+            : a);
   }
 
   /// 并发（上限 [_segConcurrency]）下剩余分片：下载 → 解密 → 原子落盘。

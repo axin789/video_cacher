@@ -484,4 +484,63 @@ seg1.ts
       );
     });
   });
+
+  test('11. 变体锁定：刷新后 master 变体重排且出现更高码率，仍选原带宽那一路', () async {
+    const master1 = '''
+#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360
+low/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
+mid/index.m3u8
+''';
+    // 刷新后的 master：顺序变了且多出 4M 的 ultra；argmax 会选错码率。
+    const master2 = '''
+#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080
+ultra/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
+mid2/index.m3u8
+''';
+    const media = '#EXTM3U\n'
+        '#EXT-X-TARGETDURATION:4\n'
+        '#EXTINF:4.0,\nseg0.ts\n'
+        '#EXTINF:4.0,\nseg1.ts\n'
+        '#EXTINF:4.0,\nseg2.ts\n'
+        '#EXT-X-ENDLIST\n';
+    final adapter = _FakeAdapter((url) {
+      if (url == 'https://cdn/hls/master.m3u8') {
+        return _body(200, master1.codeUnits);
+      }
+      if (url == 'https://cdn/hls2/master.m3u8') {
+        return _body(200, master2.codeUnits);
+      }
+      if (url.endsWith('/index.m3u8')) return _body(200, media.codeUnits);
+      if (url == 'https://cdn/hls/mid/seg0.ts') return _body(200, p0);
+      if (url == 'https://cdn/hls/mid/seg1.ts') return _body(200, p1);
+      // 旧变体的 seg2 过期触发刷新。
+      if (url == 'https://cdn/hls/mid/seg2.ts') return _body(404, const []);
+      if (url == 'https://cdn/hls2/mid2/seg2.ts') return _body(200, p2);
+      if (url == 'https://cdn/hls2/ultra/seg2.ts') {
+        return _body(200, 'WRONG-BITRATE'.codeUnits);
+      }
+      return _body(404, const []);
+    });
+    final dl = _downloader(adapter,
+        refresh: (_) async => 'https://cdn/hls2/master.m3u8');
+
+    final r = await dl.download(
+      taskId: 't11',
+      entryUrl: 'https://cdn/hls/master.m3u8',
+      dir: dir.path,
+    );
+
+    expect(r.segmentFiles.length, 3);
+    expect(File('${dir.path}/seg_2.ts').readAsBytesSync(), p2);
+    expect(
+      adapter.requested.contains('https://cdn/hls2/mid2/index.m3u8'),
+      isTrue,
+    );
+    expect(adapter.requested.any((u) => u.contains('/ultra/')), isFalse,
+        reason: '刷新后不得重新 argmax 到更高码率变体');
+  });
 }

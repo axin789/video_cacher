@@ -8,6 +8,17 @@ import '../http/url_refresher.dart';
 
 void _noop(int downloaded, int total) {}
 
+/// mp4 下载嗅探到响应体其实是 m3u8 播放列表（源类型误判）时抛出；
+/// 引擎捕获后把任务纠正为 HLS 重跑，而非永久失败。
+class PlaylistContentException implements Exception {
+  final String message;
+
+  const PlaylistContentException(this.message);
+
+  @override
+  String toString() => 'PlaylistContentException: $message';
+}
+
 /// MP4 下载结果：把可能被刷新过的最终 URL 与 ETag 回传给引擎持久化。
 class Mp4DownloadResult {
   final String finalUrl;
@@ -183,7 +194,8 @@ class Mp4Downloader {
               if (_looksLikeM3u8(chunk)) {
                 // 播放列表文本被当 mp4 下（源类型误判）：中止并清 .part，不落成片。
                 aborted = true;
-                throw StateError('URL 内容是 m3u8 播放列表而非视频（源类型误判）');
+                throw const PlaylistContentException(
+                    'URL 内容是 m3u8 播放列表而非视频（源类型误判）');
               }
             }
             sink.writeFromSync(chunk);

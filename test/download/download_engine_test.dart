@@ -1069,4 +1069,56 @@ void main() {
     await rec.dispose();
     await engine.dispose();
   });
+
+  test('21. mp4 误判自动纠正：URL 内容是 HLS → 任务改 kind=hls 同轮完成', () async {
+    final adapter = _FakeAdapter((o, c) async {
+      final url = o.uri.toString();
+      if (o.method == 'HEAD') {
+        return _bytesBody(200, const [], headers: {
+          'content-length': ['${_hlsPlaylist.length}'],
+          'accept-ranges': ['bytes'],
+        });
+      }
+      // 同一 URL 既被 mp4 下载器 GET（嗅探出 m3u8），也被 HLS 下载器当入口解析。
+      if (url == 'https://cdn/video') {
+        return _bytesBody(200, _hlsPlaylist.codeUnits);
+      }
+      if (url.endsWith('/seg0.ts')) return _bytesBody(200, _range(0, 10));
+      if (url.endsWith('/seg1.ts')) return _bytesBody(200, _range(10, 20));
+      if (url.endsWith('/seg2.ts')) return _bytesBody(200, _range(20, 30));
+      return _bytesBody(404, const []);
+    });
+    final store = MemoryTaskStore();
+    final dio = Dio()..httpClientAdapter = adapter;
+    final http = HttpClient(const DownloadConfig(), dio: dio);
+    final refresher = UrlRefresher(backoff: Duration.zero);
+    final engine = DownloadEngine(
+      store: store,
+      mp4Downloader: Mp4Downloader(http: http, refresher: refresher),
+      hlsDownloader: HlsDownloader(http: http, refresher: refresher),
+      remuxer: _FakeRemuxer(),
+    );
+    final rec = _Recorder(engine);
+
+    final dir = mkDir('t21');
+    engine.submit(_task('t21',
+        kind: SourceKind.mp4, url: 'https://cdn/video', dir: dir));
+    await rec.waitWhere((ev) =>
+        ev.taskId == 't21' &&
+        (ev.status == TaskStatus.completed || ev.status == TaskStatus.failed));
+
+    final t = engine.tasks['t21']!;
+    expect(t.status, TaskStatus.completed);
+    expect(t.kind, SourceKind.hls, reason: '误判应被纠正为 hls，而非永久失败');
+    expect(t.mp4Path, '$dir/video.mp4');
+    expect(File(t.mp4Path!).existsSync(), isTrue);
+    expect(rec.seq['t21'], contains(TaskStatus.remuxing));
+
+    final stored =
+        (await store.loadAll()).firstWhere((e) => e.taskId == 't21');
+    expect(stored.kind, SourceKind.hls, reason: '纠正后的 kind 必须持久化');
+
+    await rec.dispose();
+    await engine.dispose();
+  });
 }

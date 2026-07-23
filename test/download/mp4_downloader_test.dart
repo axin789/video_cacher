@@ -287,7 +287,8 @@ void main() {
     expect(File(part).readAsBytesSync(), first);
   });
 
-  test('8. 响应体是 m3u8 文本：中止下载抛 StateError，不留 dest 与 .part', () async {
+  test('8. 响应体是 m3u8 文本：中止下载抛 PlaylistContentException，不留 dest 与 .part',
+      () async {
     const playlist = '#EXTM3U\n#EXTINF:4.0,\nseg0.ts\n#EXT-X-ENDLIST\n';
     final adapter = _FakeAdapter((o) async {
       if (o.method == 'HEAD') {
@@ -302,7 +303,7 @@ void main() {
 
     await expectLater(
       dl.download(taskId: 't8', url: 'https://cdn/fake.mp4', destPath: dest),
-      throwsA(isA<StateError>()),
+      throwsA(isA<PlaylistContentException>()),
     );
 
     expect(File(dest).existsSync(), isFalse);

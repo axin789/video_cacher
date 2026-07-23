@@ -257,20 +257,33 @@ class DownloadEngine {
   Future<void> _runMp4(
       String taskId, DownloadTask task, CancelToken token) async {
     final dest = p.join(task.dir, 'video.mp4');
-    final result = await _mp4.download(
-      taskId: taskId,
-      url: task.url,
-      destPath: dest,
-      knownEtag: task.etag,
-      // HEAD 一返回就持久化 etag：中途 kill/暂停后续传仍能校验内容未变。
-      onEtag: (etag) {
-        final cur = _tasks[taskId];
-        if (cur == null) return;
-        _commit(cur.copyWith(etag: etag));
-      },
-      onProgress: (d, t) => _onProgress(taskId, d, t),
-      cancelToken: token,
-    );
+    final Mp4DownloadResult result;
+    try {
+      result = await _mp4.download(
+        taskId: taskId,
+        url: task.url,
+        destPath: dest,
+        knownEtag: task.etag,
+        // HEAD 一返回就持久化 etag：中途 kill/暂停后续传仍能校验内容未变。
+        onEtag: (etag) {
+          final cur = _tasks[taskId];
+          if (cur == null) return;
+          _commit(cur.copyWith(etag: etag));
+        },
+        onProgress: (d, t) => _onProgress(taskId, d, t),
+        cancelToken: token,
+      );
+    } on PlaylistContentException {
+      // 源类型误判（如离线入队时没法嗅探）：纠正为 hls 持久化，同一轮直接按
+      // HLS 重跑，任务自愈而非永久失败。
+      final cur = _tasks[taskId];
+      if (cur == null) return;
+      VideoCacherLog.d('engine', 'task $taskId: mp4 误判纠正为 hls，按 HLS 重跑');
+      final corrected = cur.copyWith(kind: SourceKind.hls);
+      _commit(corrected);
+      await _runHls(taskId, corrected, token);
+      return;
+    }
     final cur = _tasks[taskId];
     if (cur == null) return;
     // 下载返回后复查状态/意图：cancel/pause 恰落在完成提交前的窗口时尊重该终态，
