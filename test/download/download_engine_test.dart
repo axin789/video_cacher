@@ -105,6 +105,73 @@ HlsDownloader _hlsDl(_FakeAdapter a, {RefreshUrlCallback? refresh}) {
 _FakeAdapter _idleAdapter() =>
     _FakeAdapter((o, c) async => _bytesBody(404, const []));
 
+void _noopProgress(int a, int b) {}
+
+/// 在 download 返回给引擎前注入动作：确定性模拟 cancel/pause 恰好落在
+/// 下载完成与引擎后续提交之间的续段窗口。
+class _HookedMp4Downloader extends Mp4Downloader {
+  _HookedMp4Downloader({
+    required super.http,
+    required super.refresher,
+    required this.beforeReturn,
+  });
+
+  final void Function(String taskId) beforeReturn;
+
+  @override
+  Future<Mp4DownloadResult> download({
+    required String taskId,
+    required String url,
+    required String destPath,
+    String? partPath,
+    String? knownEtag,
+    void Function(int downloaded, int total) onProgress = _noopProgress,
+    CancelToken? cancelToken,
+  }) async {
+    final r = await super.download(
+      taskId: taskId,
+      url: url,
+      destPath: destPath,
+      partPath: partPath,
+      knownEtag: knownEtag,
+      onProgress: onProgress,
+      cancelToken: cancelToken,
+    );
+    beforeReturn(taskId);
+    return r;
+  }
+}
+
+/// 同上，HLS 版：动作落在下载完成与 remuxing 提交之间的窗口。
+class _HookedHlsDownloader extends HlsDownloader {
+  _HookedHlsDownloader({
+    required super.http,
+    required super.refresher,
+    required this.beforeReturn,
+  });
+
+  final void Function(String taskId) beforeReturn;
+
+  @override
+  Future<HlsDownloadResult> download({
+    required String taskId,
+    required String entryUrl,
+    required String dir,
+    void Function(int done, int total) onProgress = _noopProgress,
+    CancelToken? cancelToken,
+  }) async {
+    final r = await super.download(
+      taskId: taskId,
+      entryUrl: entryUrl,
+      dir: dir,
+      onProgress: onProgress,
+      cancelToken: cancelToken,
+    );
+    beforeReturn(taskId);
+    return r;
+  }
+}
+
 const String _hlsPlaylist = '#EXTM3U\n'
     '#EXT-X-VERSION:3\n'
     '#EXT-X-TARGETDURATION:4\n'
@@ -849,6 +916,123 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 50));
     expect(engine.tasks.containsKey('a'), isFalse, reason: '收尾后不得复活');
     expect(await store.loadAll(), isEmpty, reason: '收尾后不得回写存储');
+
+    await rec.dispose();
+    await engine.dispose();
+  });
+
+  test('17. completed 后 pause/cancel 被忽略：状态保持 completed，不被降级', () async {
+    final full = _range(0, 50);
+    final adapter = _FakeAdapter((o, c) async {
+      if (o.method == 'HEAD') {
+        return _bytesBody(200, const [], headers: {
+          'content-length': ['50'],
+          'etag': ['"v1"'],
+          'accept-ranges': ['bytes'],
+        });
+      }
+      return _bytesBody(200, full, headers: {
+        'content-length': ['50'],
+      });
+    });
+    final store = MemoryTaskStore();
+    final engine = DownloadEngine(
+      store: store,
+      mp4Downloader: _mp4Dl(adapter),
+      hlsDownloader: _hlsDl(_idleAdapter()),
+      remuxer: _FakeRemuxer(),
+    );
+    final rec = _Recorder(engine);
+
+    engine.submit(_task('t17',
+        kind: SourceKind.mp4, url: 'https://cdn/a.mp4', dir: mkDir('t17')));
+    await rec.wait('t17', TaskStatus.completed);
+
+    engine.pause('t17');
+    await engine.cancel('t17');
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(engine.tasks['t17']!.status, TaskStatus.completed);
+    expect(rec.seq['t17']!.contains(TaskStatus.paused), isFalse,
+        reason: 'completed 不得被降级为 paused');
+    expect(rec.seq['t17']!.contains(TaskStatus.canceled), isFalse,
+        reason: 'completed 不得被降级为 canceled');
+
+    await rec.dispose();
+    await engine.dispose();
+  });
+
+  test('18. cancel 落在 mp4 下载完成与 completed 提交之间：终态 canceled 不被覆盖',
+      () async {
+    final full = _range(0, 50);
+    final adapter = _FakeAdapter((o, c) async {
+      if (o.method == 'HEAD') {
+        return _bytesBody(200, const [], headers: {
+          'content-length': ['50'],
+          'etag': ['"v1"'],
+          'accept-ranges': ['bytes'],
+        });
+      }
+      return _bytesBody(200, full, headers: {
+        'content-length': ['50'],
+      });
+    });
+    final store = MemoryTaskStore();
+    late final DownloadEngine engine;
+    final dio = Dio()..httpClientAdapter = adapter;
+    engine = DownloadEngine(
+      store: store,
+      mp4Downloader: _HookedMp4Downloader(
+        http: HttpClient(const DownloadConfig(), dio: dio),
+        refresher: UrlRefresher(backoff: Duration.zero),
+        beforeReturn: (id) => unawaited(engine.cancel(id, deleteFiles: true)),
+      ),
+      hlsDownloader: _hlsDl(_idleAdapter()),
+      remuxer: _FakeRemuxer(),
+    );
+    final rec = _Recorder(engine);
+
+    engine.submit(_task('t18',
+        kind: SourceKind.mp4, url: 'https://cdn/a.mp4', dir: mkDir('t18')));
+    await rec.wait('t18', TaskStatus.canceled);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(engine.tasks['t18']!.status, TaskStatus.canceled);
+    expect(rec.seq['t18']!.contains(TaskStatus.completed), isFalse,
+        reason: '取消已落定，completed 不得覆盖（否则文件已删仍标完成）');
+
+    await rec.dispose();
+    await engine.dispose();
+  });
+
+  test('19. cancel 落在 hls 下载完成与 remuxing 提交之间：不进 remuxing，终态 canceled',
+      () async {
+    final store = MemoryTaskStore();
+    late final DownloadEngine engine;
+    final dio = Dio()..httpClientAdapter = _hlsAdapter();
+    engine = DownloadEngine(
+      store: store,
+      mp4Downloader: _mp4Dl(_idleAdapter()),
+      hlsDownloader: _HookedHlsDownloader(
+        http: HttpClient(const DownloadConfig(), dio: dio),
+        refresher: UrlRefresher(backoff: Duration.zero),
+        beforeReturn: (id) => unawaited(engine.cancel(id)),
+      ),
+      remuxer: _FakeRemuxer(),
+    );
+    final rec = _Recorder(engine);
+
+    engine.submit(_task('t19',
+        kind: SourceKind.hls,
+        url: 'https://cdn/hls/index.m3u8',
+        dir: mkDir('t19')));
+    await rec.wait('t19', TaskStatus.canceled);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(engine.tasks['t19']!.status, TaskStatus.canceled);
+    expect(rec.seq['t19']!.contains(TaskStatus.remuxing), isFalse,
+        reason: '取消已落定，不得再进 remuxing（否则永远卡在 remuxing）');
+    expect(rec.seq['t19']!.contains(TaskStatus.completed), isFalse);
 
     await rec.dispose();
     await engine.dispose();

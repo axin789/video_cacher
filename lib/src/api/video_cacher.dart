@@ -126,7 +126,10 @@ class VideoCacher {
     await ensureInitialized();
 
     final existing = _engine.tasks[id];
-    if (existing != null && !existing.isFinished) {
+    if (existing != null) {
+      // 已完成直接返回：submit 会忽略 finished 任务，落入新建分支只会拿到
+      // 一个未登记的幻影任务对象。
+      if (existing.isFinished) return existing;
       _engine.resume(id);
       return existing;
     }
