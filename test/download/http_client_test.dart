@@ -68,6 +68,24 @@ class _RecordingAdapter implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
+/// 按请求逐次决定响应的假适配器（用于多次重试的场景）。
+class _RoutingAdapter implements HttpClientAdapter {
+  _RoutingAdapter(this.handler);
+
+  final ResponseBody Function(RequestOptions o) handler;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async =>
+      handler(options);
+
+  @override
+  void close({bool force = false}) {}
+}
+
 /// 大小写不敏感地取请求头。
 String? _hdr(RequestOptions o, String name) {
   for (final e in o.headers.entries) {
@@ -174,6 +192,52 @@ void main() {
       expect(info.contentLength, 2048);
       expect(info.etag, '"abc123"');
       expect(info.acceptRanges, isTrue);
+    });
+  });
+
+  group('HttpClient 5xx 瞬时故障重试', () {
+    test('504 先失败后成功：按 transientMaxRetries 重试，最终返回', () async {
+      var calls = 0;
+      final dio = Dio()
+        ..httpClientAdapter = _RoutingAdapter((o) {
+          calls++;
+          return ResponseBody.fromBytes(
+            Uint8List.fromList(calls <= 2 ? const <int>[] : const [1, 2, 3]),
+            calls <= 2 ? 504 : 200,
+          );
+        });
+      final c = HttpClient(
+        const DownloadConfig(
+          transientMaxRetries: 3,
+          transientBackoff: Duration(milliseconds: 1),
+        ),
+        dio: dio,
+      );
+      final bytes = await c.getBytes('https://cdn/seg.ts');
+      expect(bytes, [1, 2, 3]);
+      expect(calls, 3, reason: '两次 504 后第三次成功');
+    });
+
+    test('504 持续不恢复：重试耗尽后抛 HttpStatusException', () async {
+      var calls = 0;
+      final dio = Dio()
+        ..httpClientAdapter = _RoutingAdapter((o) {
+          calls++;
+          return ResponseBody.fromBytes(Uint8List(0), 504);
+        });
+      final c = HttpClient(
+        const DownloadConfig(
+          transientMaxRetries: 2,
+          transientBackoff: Duration(milliseconds: 1),
+        ),
+        dio: dio,
+      );
+      await expectLater(
+        c.getBytes('https://cdn/seg.ts'),
+        throwsA(isA<HttpStatusException>()
+            .having((e) => e.statusCode, 'statusCode', 504)),
+      );
+      expect(calls, 3, reason: '首次 + 2 次重试');
     });
   });
 

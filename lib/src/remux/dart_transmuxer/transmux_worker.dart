@@ -153,6 +153,11 @@ Future<int> _pipeline(TransmuxRequest req) async {
   // 个分片 + 表（见下方分片准备流水线注释）。
   final demux = TsDemuxer();
   int totalBytes = 0;
+  // 阶段计时：decryptWait = 等待「读盘+解密」的净阻塞时长（前瞻没盖住的部分，
+  // 即解密的有效串行成本）；demux = 解封装 + 转 ES 的时长。据此定位瓶颈，
+  // 避免盲目优化（例如是否值得引入系统硬件 AES）。
+  var prepWaitMs = 0;
+  var feedMs = 0;
   Uint8List? sps, pps;
   final vtable = <VideoSample>[];
   int iCount = 0, pCount = 0, bCount = 0;
@@ -284,11 +289,22 @@ Future<int> _pipeline(TransmuxRequest req) async {
         req.reply.send({'progress': totalBytes});
       }
 
+      final phaseSw = Stopwatch();
+
       pump(); // 启动第 0..=_prepareAhead 片的准备
       while (pending.isNotEmpty) {
         final next = pending.removeAt(0);
         inFlightBytes -= pendingBytes.removeAt(0);
-        await feedSegment(await next);
+        phaseSw
+          ..reset()
+          ..start();
+        final seg = await next;
+        prepWaitMs += phaseSw.elapsedMilliseconds;
+        phaseSw
+          ..reset()
+          ..start();
+        await feedSegment(seg);
+        feedMs += phaseSw.elapsedMilliseconds;
         pump(); // 当前片明文已随 feedSegment 返回可回收，再补位下一片
       }
       demux.finish();
@@ -350,6 +366,7 @@ Future<int> _pipeline(TransmuxRequest req) async {
 
     // 原子写：先流式写 .part 再 rename，进程被杀不会在最终路径留下半截 mp4。
     final partPath = '$outMp4.part';
+    final buildSw = Stopwatch()..start();
     final built = await buildMp4(
       vsamples: vtable,
       sps: vSps,
@@ -367,7 +384,12 @@ Future<int> _pipeline(TransmuxRequest req) async {
         'ts=${built.videoTimescale} elst.empty=${built.emptyEditDur} '
         'elst.mediaTime=${built.mediaStart} vDur=${built.videoTotalDur} '
         'ctts[0..]=${built.firstCtts}');
+    buildSw.stop();
     _log('boxes: mdat=${built.mdatSize} moov=${built.moovSize}');
+    // 瓶颈定位：decryptWait 大 → 解密是瓶颈（可考虑系统硬件 AES）；
+    // demux 大 → 解封装/转 ES 是瓶颈；build 大 → 第二遍拼装与磁盘 I/O 是瓶颈。
+    _log('phases: decryptWait=${prepWaitMs}ms demux=${feedMs}ms '
+        'build=${buildSw.elapsedMilliseconds}ms');
 
     await File(partPath).rename(outMp4);
 

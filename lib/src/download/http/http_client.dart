@@ -56,8 +56,10 @@ class HttpClient {
   final DownloadConfig _config;
   final Dio _dio;
 
-  static const int _maxTransientRetries = 2;
-  static const Duration _retryBaseBackoff = Duration(milliseconds: 120);
+  int get _maxTransientRetries => _config.transientMaxRetries;
+
+  /// 指数退避：1×/2×/4×… 504 等网关超时需要秒级窗口才可能恢复。
+  Duration _backoffFor(int attempt) => _config.transientBackoff * (1 << attempt);
 
   HttpClient(DownloadConfig config, {Dio? dio})
       : _config = config,
@@ -185,7 +187,7 @@ class HttpClient {
         if (code >= 500) {
           lastError = HttpStatusException(code, url);
           if (attempt < _maxTransientRetries) {
-            await Future<void>.delayed(_retryBaseBackoff * (attempt + 1));
+            await Future<void>.delayed(_backoffFor(attempt));
             continue;
           }
         }
@@ -203,7 +205,7 @@ class HttpClient {
         }
         if (_isTransient(e) && attempt < _maxTransientRetries) {
           lastError = e;
-          await Future<void>.delayed(_retryBaseBackoff * (attempt + 1));
+          await Future<void>.delayed(_backoffFor(attempt));
           continue;
         }
         // 有响应但非 2xx/3xx（重试耗尽的 5xx 或其它 4xx）：统一成 HttpStatusException，

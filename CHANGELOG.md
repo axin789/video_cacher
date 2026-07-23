@@ -15,6 +15,11 @@
   实测 4.9s → 2.2s（约 2.2×，Mac；真机单核 AES 更慢、收益更大）。内存上界为
   「当前片 + 至多 2 个前瞻片，且在飞字节不超过 24MB」，大分片源不会因前瞻抬高
   峰值；产物字节不变（sha256 校验）。
+- **修复偶发 504/5xx 直接判定任务失败**：瞬时故障重试从「2 次、120ms 起」放宽为
+  「3 次、1s 起指数退避」（约 7 秒窗口，网关超时通常可恢复），可通过
+  `DownloadConfig.transientMaxRetries` / `transientBackoff` 配置。
+- transmux 日志新增阶段耗时 `phases: decryptWait=…ms demux=…ms build=…ms`，
+  便于定位「处理中」阶段的真实瓶颈。
 - `DownloadConfig` 新增 `headers`（自定义请求头，如 CDN 防盗链 Referer）。
 - pointycastle 版本约束放宽至 `>=3.7.3`，兼容宿主工程锁定的旧版本。
 

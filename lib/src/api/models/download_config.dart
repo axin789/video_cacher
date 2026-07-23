@@ -28,6 +28,13 @@ class DownloadConfig {
   /// 单次刷新回调超时：回调挂起超过此时长按该次尝试失败处理。
   final Duration refreshTimeout;
 
+  /// 瞬时故障（连接/超时/5xx）的重试次数。
+  /// 504 等网关超时通常需要数秒才恢复，故默认退避到秒级。
+  final int transientMaxRetries;
+
+  /// 瞬时故障重试的基础退避，按 1×/2×/4× 指数增长。
+  final Duration transientBackoff;
+
   /// 视为「直链过期，需刷新 URL」的 HTTP 状态码。
   /// 部分 CDN 用 401/403 表示签名/token 过期，故默认全部纳入。
   final Set<int> refreshStatusCodes;
@@ -42,6 +49,8 @@ class DownloadConfig {
     this.refreshMaxRetries = 3,
     this.refreshBackoff = const Duration(milliseconds: 500),
     this.refreshTimeout = const Duration(seconds: 30),
+    this.transientMaxRetries = 3,
+    this.transientBackoff = const Duration(seconds: 1),
     this.refreshStatusCodes = const {401, 403, 404, 410},
   });
 
@@ -56,6 +65,8 @@ class DownloadConfig {
     int? refreshMaxRetries,
     Duration? refreshBackoff,
     Duration? refreshTimeout,
+    int? transientMaxRetries,
+    Duration? transientBackoff,
     Set<int>? refreshStatusCodes,
   }) {
     return DownloadConfig(
@@ -68,6 +79,8 @@ class DownloadConfig {
       refreshMaxRetries: refreshMaxRetries ?? this.refreshMaxRetries,
       refreshBackoff: refreshBackoff ?? this.refreshBackoff,
       refreshTimeout: refreshTimeout ?? this.refreshTimeout,
+      transientMaxRetries: transientMaxRetries ?? this.transientMaxRetries,
+      transientBackoff: transientBackoff ?? this.transientBackoff,
       refreshStatusCodes: refreshStatusCodes ?? this.refreshStatusCodes,
     );
   }
