@@ -40,8 +40,14 @@ class ElementaryStream {
 
   void _flush() {
     if (_cur != null) {
-      _parsePes(_cur!);
-      units.add(_cur!);
+      final u = _cur!;
+      _parsePes(u);
+      if (u.pts == null && TsStreamType.isVideo(streamType) && units.isNotEmpty) {
+        // 有界长度 PES 会把一个 AU 拆成多包，续包不带 PTS：并回上一单元
+        units.last.data.add(u.data.toBytes());
+      } else {
+        units.add(u);
+      }
     }
     _cur = null;
   }
@@ -58,11 +64,12 @@ void _parsePes(PesUnit u) {
   }
   final ptsDtsFlags = (b[7] >> 6) & 0x3;
   final headerLen = b[8];
-  int off = 9;
-  if (ptsDtsFlags == 0x2) {
+  const off = 9;
+  // 流尾截断的 PES 头：字节不足时按无 PTS 处理，不读越界
+  if (ptsDtsFlags == 0x2 && b.length >= 14) {
     u.pts = _readTs(b, off);
     u.dts = u.pts;
-  } else if (ptsDtsFlags == 0x3) {
+  } else if (ptsDtsFlags == 0x3 && b.length >= 19) {
     u.pts = _readTs(b, off);
     u.dts = _readTs(b, off + 5);
   }
@@ -96,6 +103,9 @@ class TsDemuxer {
   ElementaryStream? audio;
 
   final BytesBuilder _leftover = BytesBuilder(copy: false);
+
+  /// PSI（PAT/PMT）section 跨 TS 包的积累缓冲：pid -> 已收 section 字节。
+  final Map<int, BytesBuilder> _psiBuf = {};
 
   int? get videoStreamType => video?.streamType;
   int? get audioStreamType => audio?.streamType;
@@ -149,9 +159,9 @@ class TsDemuxer {
 
   void _dispatch(int pid, bool pusi, Uint8List payload) {
     if (pid == 0) {
-      _parsePat(payload, pusi);
+      _psi(pid, pusi, payload, _parsePat);
     } else if (pmtPid != null && pid == pmtPid) {
-      _parsePmt(payload, pusi);
+      _psi(pid, pusi, payload, _parsePmt);
     } else if (video != null && pid == video!.pid) {
       video!.onPacket(payload, pusi);
     } else if (audio != null && pid == audio!.pid) {
@@ -159,13 +169,37 @@ class TsDemuxer {
     }
   }
 
-  void _parsePat(Uint8List p, bool pusi) {
+  /// 按 pid 积累一个完整 PSI section（可跨多个 TS 包）后交给 [parse]。
+  ///
+  /// section_length 超过单包 payload 时旧实现会读越界；非法超长（>1021）按
+  /// 无 PSI 处理，等上层报 Unsupported 而非崩溃。
+  void _psi(int pid, bool pusi, Uint8List payload, void Function(Uint8List) parse) {
+    if (pusi) {
+      if (payload.isEmpty) return;
+      final start = 1 + payload[0]; // pointer_field
+      if (start > payload.length) return;
+      _psiBuf[pid] = BytesBuilder()..add(Uint8List.sublistView(payload, start));
+    } else {
+      final buf = _psiBuf[pid];
+      if (buf == null) return; // 没见过起始包的续包
+      buf.add(payload);
+    }
+    final bytes = _psiBuf[pid]!.toBytes();
+    if (bytes.length < 3) return;
+    final sectionLen = ((bytes[1] & 0x0f) << 8) | bytes[2];
+    if (sectionLen > 1021) {
+      _psiBuf.remove(pid);
+      return;
+    }
+    if (bytes.length < 3 + sectionLen) return; // 等续包
+    _psiBuf.remove(pid);
+    parse(Uint8List.sublistView(bytes, 0, 3 + sectionLen));
+  }
+
+  void _parsePat(Uint8List p) {
     if (pmtPid != null) return;
-    int o = 0;
-    if (pusi) o += 1 + p[0]; // pointer_field
-    final sectionLen = ((p[o + 1] & 0x0f) << 8) | p[o + 2];
-    final end = o + 3 + sectionLen - 4; // 去掉 CRC
-    int idx = o + 8; // 跳到 program 循环
+    final end = p.length - 4; // 去掉 CRC
+    int idx = 8; // 跳到 program 循环
     while (idx + 4 <= end) {
       final prog = (p[idx] << 8) | p[idx + 1];
       final pid = ((p[idx + 2] & 0x1f) << 8) | p[idx + 3];
@@ -177,14 +211,12 @@ class TsDemuxer {
     }
   }
 
-  void _parsePmt(Uint8List p, bool pusi) {
+  void _parsePmt(Uint8List p) {
     if (video != null || audio != null) return;
-    int o = 0;
-    if (pusi) o += 1 + p[0];
-    final sectionLen = ((p[o + 1] & 0x0f) << 8) | p[o + 2];
-    final end = o + 3 + sectionLen - 4;
-    final programInfoLen = ((p[o + 10] & 0x0f) << 8) | p[o + 11];
-    int idx = o + 12 + programInfoLen;
+    if (p.length < 12) return;
+    final end = p.length - 4;
+    final programInfoLen = ((p[10] & 0x0f) << 8) | p[11];
+    int idx = 12 + programInfoLen;
     while (idx + 5 <= end) {
       final streamType = p[idx];
       final ePid = ((p[idx + 1] & 0x1f) << 8) | p[idx + 2];
