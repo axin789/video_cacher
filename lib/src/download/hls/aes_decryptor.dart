@@ -22,8 +22,8 @@ class AesDecryptor {
   }) =>
       decryptCbc(ciphertext, key, iv);
 
-  /// 静态核心：实例 API 与下载器的 isolate 闭包共用。cipher 在本函数内部
-  /// 构造——pointycastle 对象不跨 isolate，闭包只能捕获纯字节再进来现建。
+  /// 静态核心：实例 API 与 remux worker isolate（解密后置）共用。cipher 在
+  /// 本函数内部构造——pointycastle 对象不跨 isolate，只传纯字节进来现建。
   static Uint8List decryptCbc(
     List<int> ciphertext,
     List<int> key,

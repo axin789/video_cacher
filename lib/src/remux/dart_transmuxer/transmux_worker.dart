@@ -3,7 +3,9 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import '../../download/hls/aes_decryptor.dart';
 import '../../log.dart';
+import '../remuxer.dart' show TransmuxCrypto;
 import 'aac_adts.dart';
 import 'dart_transmuxer.dart' show UnsupportedStreamException;
 import 'h264_parser.dart';
@@ -19,14 +21,17 @@ void _log(String msg) {
 /// 传给 remux worker isolate 的启动参数。
 ///
 /// 静态变量不跨 isolate（worker 里读到的是自己的副本），verbose 必须显式带入。
+/// [crypto] 的字段（Uint8List/Map）均可随 spawn 消息发送。
 class TransmuxRequest {
   final SendPort reply;
   final List<String> segmentFiles;
   final String outMp4;
   final bool verbose;
+  final TransmuxCrypto? crypto;
 
   const TransmuxRequest(
-      this.reply, this.segmentFiles, this.outMp4, this.verbose);
+      this.reply, this.segmentFiles, this.outMp4, this.verbose,
+      {this.crypto});
 }
 
 /// remux worker isolate 入口：跑完整条转封装流水线并经 [TransmuxRequest.reply]
@@ -126,20 +131,38 @@ Future<int> _pipeline(TransmuxRequest req) async {
     units.removeRange(0, end);
   }
 
+  final crypto = req.crypto;
   for (final path in segmentFiles) {
-    final raf = await File(path).open();
-    try {
-      while (true) {
-        final chunk = await raf.read(_feedChunkSize);
-        if (chunk.isEmpty) break;
-        totalBytes += chunk.length;
-        demux.feed(chunk);
-        // PMT 一见即校验视频编码：h265 等大任务不必读完全部分片才报错
+    final iv = crypto?.ivByPath[path];
+    if (iv != null) {
+      // 加密分片（解密后置）：PKCS7 去填充需要完整密文尾块，整片读入解密后
+      // 按块喂。进度按磁盘文件字节记，与引擎按文件长度算的 totalBytes 对齐。
+      final cipherBytes = await File(path).readAsBytes();
+      totalBytes += cipherBytes.length;
+      final plain = AesDecryptor.decryptCbc(cipherBytes, crypto!.key, iv);
+      for (var off = 0; off < plain.length; off += _feedChunkSize) {
+        final end = off + _feedChunkSize < plain.length
+            ? off + _feedChunkSize
+            : plain.length;
+        demux.feed(Uint8List.sublistView(plain, off, end));
         _failFastOnPmt(demux);
         drainVideo(all: false);
       }
-    } finally {
-      await raf.close();
+    } else {
+      final raf = await File(path).open();
+      try {
+        while (true) {
+          final chunk = await raf.read(_feedChunkSize);
+          if (chunk.isEmpty) break;
+          totalBytes += chunk.length;
+          demux.feed(chunk);
+          // PMT 一见即校验视频编码：h265 等大任务不必读完全部分片才报错
+          _failFastOnPmt(demux);
+          drainVideo(all: false);
+        }
+      } finally {
+        await raf.close();
+      }
     }
     req.reply.send({'progress': totalBytes});
   }

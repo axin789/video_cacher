@@ -55,6 +55,7 @@ class DartTransmuxer implements Remuxer {
     required List<String> segmentFiles,
     required String outMp4,
     required String dir,
+    TransmuxCrypto? crypto,
     void Function(int bytes)? onProgress,
   }) async {
     _canceled.remove(taskId);
@@ -90,7 +91,8 @@ class DartTransmuxer implements Remuxer {
       w.isolate = await Isolate.spawn(
         transmuxWorker,
         TransmuxRequest(
-            w.port.sendPort, segmentFiles, outMp4, VideoCacherLog.verbose),
+            w.port.sendPort, segmentFiles, outMp4, VideoCacherLog.verbose,
+            crypto: crypto),
         onExit: w.exitPort.sendPort,
         debugName: 'video_cacher.transmux.$taskId',
       );

@@ -102,7 +102,8 @@ ${segPrefix}seg2.ts
 #EXT-X-ENDLIST
 ''';
 
-  test('1. 加密 happy path：3 片解密正确、有序、进度到 3/3', () async {
+  test('1. 加密 happy path：密文原样落 .enc 不解密，key/ivByPath 齐全，进度到 3/3',
+      () async {
     final adapter = _FakeAdapter((url) {
       if (url.endsWith('/index.m3u8')) {
         return _body(200, encMediaPlaylist('').codeUnits);
@@ -123,20 +124,32 @@ ${segPrefix}seg2.ts
       onProgress: (d, t) => progress.add([d, t]),
     );
 
-    expect(r.segmentFiles.length, 3);
     expect(r.finalEntryUrl, 'https://cdn/hls/index.m3u8');
-    expect(File('${dir.path}/seg_0.ts').readAsBytesSync(), p0);
-    expect(File('${dir.path}/seg_1.ts').readAsBytesSync(), p1);
-    expect(File('${dir.path}/seg_2.ts').readAsBytesSync(), p2);
     expect(r.segmentFiles, [
-      '${dir.path}/seg_0.ts',
-      '${dir.path}/seg_1.ts',
-      '${dir.path}/seg_2.ts',
+      '${dir.path}/seg_0.ts.enc',
+      '${dir.path}/seg_1.ts.enc',
+      '${dir.path}/seg_2.ts.enc',
     ]);
+    // 下载阶段不解密：磁盘字节与服务端密文逐字节一致，且不产出明文 .ts。
+    expect(File('${dir.path}/seg_0.ts.enc').readAsBytesSync(),
+        _encrypt(p0, key, iv));
+    expect(File('${dir.path}/seg_1.ts.enc').readAsBytesSync(),
+        _encrypt(p1, key, iv));
+    expect(File('${dir.path}/seg_2.ts.enc').readAsBytesSync(),
+        _encrypt(p2, key, iv));
+    expect(File('${dir.path}/seg_0.ts').existsSync(), isFalse);
+    // 解密所需的 key 与显式 IV（全片同一 IV）随结果带出。
+    expect(r.key, key);
+    expect(r.ivByPath, {
+      '${dir.path}/seg_0.ts.enc': iv,
+      '${dir.path}/seg_1.ts.enc': iv,
+      '${dir.path}/seg_2.ts.enc': iv,
+    });
     expect(progress.last, [3, 3]);
   });
 
-  test('2. 续传：预置 seg_1.ts → 跳过 seg1 下载，仍返回全部 3 片', () async {
+  test('2. 续传：预置旧版明文 seg_1.ts → 跳过 seg1，结果混合明文/密文路径', () async {
+    // 0.2.0 及更早版本下载即解密，磁盘上是明文 seg_1.ts：必须视为已完成。
     File('${dir.path}/seg_1.ts').writeAsBytesSync(p1);
 
     final adapter = _FakeAdapter((url) {
@@ -156,11 +169,24 @@ ${segPrefix}seg2.ts
       dir: dir.path,
     );
 
-    expect(r.segmentFiles.length, 3);
     expect(adapter.requested.any((u) => u.endsWith('/seg1.ts')), isFalse);
+    // segmentFiles 逐索引给出实际存在的路径：明文/密文混排。
+    expect(r.segmentFiles, [
+      '${dir.path}/seg_0.ts.enc',
+      '${dir.path}/seg_1.ts',
+      '${dir.path}/seg_2.ts.enc',
+    ]);
     expect(File('${dir.path}/seg_1.ts').readAsBytesSync(), p1);
-    expect(File('${dir.path}/seg_0.ts').readAsBytesSync(), p0);
-    expect(File('${dir.path}/seg_2.ts').readAsBytesSync(), p2);
+    expect(File('${dir.path}/seg_0.ts.enc').readAsBytesSync(),
+        _encrypt(p0, key, iv));
+    expect(File('${dir.path}/seg_2.ts.enc').readAsBytesSync(),
+        _encrypt(p2, key, iv));
+    // 明文片不需要解密：ivByPath 只含两个密文片。
+    expect(
+      r.ivByPath.keys,
+      unorderedEquals(
+          ['${dir.path}/seg_0.ts.enc', '${dir.path}/seg_2.ts.enc']),
+    );
   });
 
   test('3. 未加密 playlist：分片原样落盘', () async {
@@ -190,6 +216,10 @@ seg1.ts
     expect(r.segmentFiles.length, 2);
     expect(File('${dir.path}/seg_0.ts').readAsBytesSync(), p0);
     expect(File('${dir.path}/seg_1.ts').readAsBytesSync(), p1);
+    // 未加密：不产出 .enc，也没有 crypto 信息。
+    expect(File('${dir.path}/seg_0.ts.enc').existsSync(), isFalse);
+    expect(r.key, isNull);
+    expect(r.ivByPath, isEmpty);
   });
 
   test('4. 分片 404 → 刷新 → 重映射 → 成功，finalEntryUrl 为新入口', () async {
@@ -219,9 +249,15 @@ seg1.ts
     );
 
     expect(r.finalEntryUrl, newEntry);
-    expect(File('${dir.path}/seg_0.ts').readAsBytesSync(), p0);
-    expect(File('${dir.path}/seg_1.ts').readAsBytesSync(), p1);
-    expect(File('${dir.path}/seg_2.ts').readAsBytesSync(), p2);
+    expect(File('${dir.path}/seg_0.ts.enc').readAsBytesSync(),
+        _encrypt(p0, key, iv));
+    expect(File('${dir.path}/seg_1.ts.enc').readAsBytesSync(),
+        _encrypt(p1, key, iv));
+    expect(File('${dir.path}/seg_2.ts.enc').readAsBytesSync(),
+        _encrypt(p2, key, iv));
+    // key/IV 对应最终成功那次尝试，3 片密文都有 IV。
+    expect(r.key, key);
+    expect(r.ivByPath.length, 3);
     // 新入口的 seg2 被请求过。
     expect(adapter.requested.contains('https://cdn/hls/new/seg2.ts'), isTrue);
   });
@@ -308,10 +344,12 @@ seg1.ts
 
     // 取消不应触发刷新。
     expect(refreshCalls, 0);
-    // 已下好的分片保留在磁盘；未下的 seg2 不产出。
-    expect(File('${dir.path}/seg_0.ts').readAsBytesSync(), p0);
-    expect(File('${dir.path}/seg_1.ts').readAsBytesSync(), p1);
-    expect(File('${dir.path}/seg_2.ts').existsSync(), isFalse);
+    // 已下好的密文分片保留在磁盘；未下的 seg2 不产出。
+    expect(File('${dir.path}/seg_0.ts.enc').readAsBytesSync(),
+        _encrypt(p0, key, iv));
+    expect(File('${dir.path}/seg_1.ts.enc').readAsBytesSync(),
+        _encrypt(p1, key, iv));
+    expect(File('${dir.path}/seg_2.ts.enc').existsSync(), isFalse);
   });
 
   test('7. 分片空 body：抛错且不产出 0 字节分片文件', () async {
@@ -336,13 +374,15 @@ seg1.ts
       throwsA(isA<StateError>()),
     );
 
-    // 空 body 不能落成 0 字节文件。
+    // 空 body 不能落成 0 字节文件（明文/密文路径都不该有）。
     expect(File('${dir.path}/seg_1.ts').existsSync(), isFalse);
+    expect(File('${dir.path}/seg_1.ts.enc').existsSync(), isFalse);
   });
 
-  test('8. BOM playlist：不产生幽灵分片，隐式 IV 按正确 mediaSequence 解密', () async {
-    // KEY 不带 IV → 隐式 IV=mediaSequence。BOM 行若被当 URI 会多出幽灵分片，
-    // 把真实分片的序号整体 +1 → 解密错乱。
+  test('8. BOM playlist：不产生幽灵分片，隐式 IV 按逐片 mediaSequence 计入 ivByPath',
+      () async {
+    // KEY 不带 IV → 隐式 IV=mediaSequence（基数非零：7）。BOM 行若被当 URI 会
+    // 多出幽灵分片，把真实分片的序号整体 +1 → ivByPath 全错。
     const playlist = '#EXTM3U\n'
         '#EXT-X-TARGETDURATION:4\n'
         '#EXT-X-MEDIA-SEQUENCE:7\n'
@@ -371,9 +411,17 @@ seg1.ts
     );
 
     expect(r.segmentFiles.length, 2);
-    expect(File('${dir.path}/seg_0.ts').readAsBytesSync(), p0);
-    expect(File('${dir.path}/seg_1.ts').readAsBytesSync(), p1);
-    expect(File('${dir.path}/seg_2.ts').existsSync(), isFalse);
+    expect(File('${dir.path}/seg_0.ts.enc').readAsBytesSync(),
+        _encrypt(p0, key, AesDecryptor.ivFromSequence(7)));
+    expect(File('${dir.path}/seg_1.ts.enc').readAsBytesSync(),
+        _encrypt(p1, key, AesDecryptor.ivFromSequence(8)));
+    expect(File('${dir.path}/seg_2.ts.enc').existsSync(), isFalse);
+    // 隐式 IV：逐片 mediaSequence 大端 16 字节，基数从 7 起。
+    expect(r.key, key);
+    expect(r.ivByPath, {
+      '${dir.path}/seg_0.ts.enc': AesDecryptor.ivFromSequence(7),
+      '${dir.path}/seg_1.ts.enc': AesDecryptor.ivFromSequence(8),
+    });
   });
 
   test('9. 非 ASCII 分片名：解析出单次百分号编码的 URI，不双重编码', () async {
@@ -423,6 +471,7 @@ seg1.ts
       // fail-fast：除入口 playlist 外没有任何请求（key/分片都不该发）。
       expect(adapter.requested, ['https://cdn/hls/index.m3u8']);
       expect(File('${dir.path}/seg_0.ts').existsSync(), isFalse);
+      expect(File('${dir.path}/seg_0.ts.enc').existsSync(), isFalse);
     }
 
     test('key 轮换（多个不同 EXT-X-KEY）', () async {

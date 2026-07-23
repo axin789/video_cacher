@@ -1,9 +1,12 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:video_cacher/src/download/hls/aes_decryptor.dart';
 import 'package:video_cacher/src/log.dart';
 import 'package:video_cacher/src/remux/dart_transmuxer/dart_transmuxer.dart';
+import 'package:video_cacher/src/remux/remuxer.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pointycastle/export.dart';
 
 int _u32(Uint8List b, int o) =>
     (b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3];
@@ -90,6 +93,26 @@ double _firstFramePts(String file, String stream) {
       .firstWhere((l) => l.isNotEmpty);
   return double.parse(first);
 }
+
+/// AES-128-CBC + PKCS7 整片加密（AesDecryptor.decryptCbc 的逆操作）。
+Uint8List _encrypt(Uint8List plain, Uint8List key, Uint8List iv) {
+  final cipher = PaddedBlockCipherImpl(
+    PKCS7Padding(),
+    CBCBlockCipher(AESEngine()),
+  )..init(
+      true,
+      PaddedBlockCipherParameters<CipherParameters, CipherParameters>(
+        ParametersWithIV<KeyParameter>(KeyParameter(key), iv),
+        null,
+      ),
+    );
+  return cipher.process(plain);
+}
+
+String _sha256Hex(Uint8List bytes) => SHA256Digest()
+    .process(bytes)
+    .map((b) => b.toRadixString(16).padLeft(2, '0'))
+    .join();
 
 void main() {
   final fixture = File('test/fixtures/ts/h264_aac.ts');
@@ -207,6 +230,52 @@ void main() {
 
       expect(frameMd5s(outMp4), frameMd5s(ref),
           reason: '解码视频应与 ffmpeg -c copy 逐帧像素一致');
+    });
+
+    test('加密分片 + TransmuxCrypto：产物与明文 remux 逐字节一致（sha256）', () async {
+      // 把 fixture 按 188 对齐拆成 2 段，模拟多分片 HLS。
+      final tsBytes = fixture.readAsBytesSync();
+      expect(tsBytes.length % 188, 0, reason: 'TS fixture 应为 188 字节对齐');
+      final splitAt = (tsBytes.length ~/ 188 ~/ 2) * 188;
+      final part0 = Uint8List.sublistView(tsBytes, 0, splitAt);
+      final part1 = Uint8List.sublistView(tsBytes, splitAt);
+
+      // 明文两段 remux（无 crypto）作为基准。
+      final plain0 = File('${tmp.path}/seg_0.ts')..writeAsBytesSync(part0);
+      final plain1 = File('${tmp.path}/seg_1.ts')..writeAsBytesSync(part1);
+      final plainOut = '${tmp.path}/plain.mp4';
+      final rPlain = await DartTransmuxer().remux(
+        taskId: 'plain',
+        segmentFiles: [plain0.path, plain1.path],
+        outMp4: plainOut,
+        dir: tmp.path,
+      );
+      expect(rPlain.ok, isTrue, reason: rPlain.error);
+
+      // 同两段 AES-128-CBC 加密落 .enc（固定 key + 逐片序号 IV），
+      // 带 TransmuxCrypto remux：worker 内解密必须字节透明。
+      final key = Uint8List.fromList(List<int>.generate(16, (i) => i * 7 & 0xff));
+      final iv0 = AesDecryptor.ivFromSequence(0);
+      final iv1 = AesDecryptor.ivFromSequence(1);
+      final enc0 = File('${tmp.path}/seg_0.ts.enc')
+        ..writeAsBytesSync(_encrypt(part0, key, iv0));
+      final enc1 = File('${tmp.path}/seg_1.ts.enc')
+        ..writeAsBytesSync(_encrypt(part1, key, iv1));
+      final encOut = '${tmp.path}/enc.mp4';
+      final rEnc = await DartTransmuxer().remux(
+        taskId: 'enc',
+        segmentFiles: [enc0.path, enc1.path],
+        outMp4: encOut,
+        dir: tmp.path,
+        crypto: TransmuxCrypto(key, {enc0.path: iv0, enc1.path: iv1}),
+      );
+      expect(rEnc.ok, isTrue, reason: rEnc.error);
+
+      final plainHash = _sha256Hex(File(plainOut).readAsBytesSync());
+      final encHash = _sha256Hex(File(encOut).readAsBytesSync());
+      // ignore: avoid_print
+      print('sha256 plain=$plainHash enc=$encHash');
+      expect(encHash, plainHash, reason: '解密后置必须对产物字节透明');
     });
   });
 }

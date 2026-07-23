@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -16,22 +15,35 @@ void _noop(int done, int total) {}
 
 /// HLS 下载结果：交给 remux 步骤的有序分片文件 + 最终（可能被刷新过的）入口地址。
 class HlsDownloadResult {
-  /// 解密后的分片绝对路径，按播放列表顺序（seg_0.ts, seg_1.ts, ...）。
+  /// 分片绝对路径，按播放列表顺序。明文片为 `seg_<n>.ts`，
+  /// 加密片为原样落盘的密文 `seg_<n>.ts.enc`（解密后置到 remux 阶段）。
   final List<String> segmentFiles;
 
   /// 成功那次所用的入口 m3u8 地址（发生过刷新时为新地址）。
   final String finalEntryUrl;
 
+  /// AES-128 key（16 字节）；playlist 未加密时为 null。
+  final Uint8List? key;
+
+  /// `.enc` 密文分片路径 → 其 16 字节 IV；明文分片不在表内。
+  /// key/IV 对应最终成功那次尝试所解析的 playlist。
+  final Map<String, Uint8List> ivByPath;
+
   const HlsDownloadResult({
     required this.segmentFiles,
     required this.finalEntryUrl,
+    this.key,
+    this.ivByPath = const {},
   });
 }
 
-/// HLS 分片下载器：解析 m3u8 → 并发下 ts → 整片 AES-128 解密 → 原子落 `seg_<n>.ts`。
+/// HLS 分片下载器：解析 m3u8 → 并发下 ts → 原子落盘。下载阶段是纯网络 IO：
+/// 加密分片不解密、密文原样落 `seg_<n>.ts.enc`，解密后置到 remux worker
+/// isolate（与 demux 重叠），避免 CPU 解密卡在抓取环路里压低网络吞吐。
 ///
 /// 稳定性核心：
-/// - **磁盘推导续传**：`seg_<n>.ts` 已存在且非空即视为完成，跳过下载。
+/// - **磁盘推导续传**：`seg_<n>.ts`（明文/旧版已解密产物）或 `seg_<n>.ts.enc`
+///   已存在且非空即视为完成，跳过下载。
 /// - **原子写**：先写 `.tmp` 再 rename，崩溃中断不会留下半片被误当完成。
 /// - **URL 过期重映射**：入口/变体/key/分片任一 404/410 → 刷新入口 → 重解析新 playlist →
 ///   按分片索引续下剩余片（磁盘已有的自动跳过）。刷新次数有上限防死循环。
@@ -86,7 +98,7 @@ class HlsDownloader {
           throw StateError('HLS media playlist 无分片: $currentEntry');
         }
         // 已知边界：按 VOD 假设——同一内容跨刷新分片数/顺序稳定、MEDIA-SEQUENCE 不变
-        // （隐式 IV 依赖 mediaSequence 稳定，见 _downloadSegments）。expectedTotal 锁定
+        // （隐式 IV 依赖 mediaSequence 稳定，见下方 ivByPath 构建）。expectedTotal 锁定
         // 首次解析的分片数：刷新后 playlist 变长时只取前 expectedTotal 个（多出的忽略），
         // 变短则走下方致命校验。直播/滑动窗口播放列表不在支持范围内。
         expectedTotal ??= segments.length;
@@ -119,17 +131,33 @@ class HlsDownloader {
           dir: dir,
           segments: segments,
           total: total,
-          keyBytes: keyBytes,
-          key: key,
+          encrypted: encrypted,
           onProgress: onProgress,
           cancelToken: cancelToken,
         );
 
-        final files = [for (var i = 0; i < total; i++) _segPath(dir, i)];
+        // 逐索引取实际存在的产物路径（明文优先），密文片配上解密 IV。
+        final files = <String>[];
+        final ivByPath = <String, Uint8List>{};
+        for (var i = 0; i < total; i++) {
+          final path = _existingSegPath(dir, i)!; // 下载成功后每索引必有产物
+          files.add(path);
+          if (keyBytes == null || !path.endsWith('.enc')) continue;
+          // 刷新后 playlist 变短时，磁盘遗留的尾部密文片按 VOD 假设
+          // （mediaSequence = 首片序号 + 索引）推导隐式 IV。
+          final seq = i < segments.length
+              ? segments[i].mediaSequence
+              : segments.first.mediaSequence + i;
+          ivByPath[path] = key!.ivHex != null
+              ? AesDecryptor.ivFromHex(key.ivHex!)
+              : AesDecryptor.ivFromSequence(seq);
+        }
         VideoCacherLog.d('hls', '[$taskId] 下载完成: $total 片');
         return HlsDownloadResult(
           segmentFiles: files,
           finalEntryUrl: currentEntry,
+          key: keyBytes == null ? null : Uint8List.fromList(keyBytes),
+          ivByPath: ivByPath,
         );
       } on UrlExpiredException catch (e) {
         // 与 404 竞争时若已取消：不再刷新，立即让取消生效。
@@ -219,7 +247,8 @@ class HlsDownloader {
             : a);
   }
 
-  /// 并发（上限 [_segConcurrency]）下剩余分片：下载 → 解密 → 原子落盘。
+  /// 并发（上限 [_segConcurrency]）下剩余分片：下载 → 原子落盘（不解密，
+  /// [encrypted] 时密文原样落 `.ts.enc`）。
   ///
   /// 任一分片命中 404/410 时，所有 worker 优雅收尾（保留已下好的分片），再抛
   /// [UrlExpiredException] 触发上层刷新重映射。取消/其它错误同样先收尾再冒泡。
@@ -227,8 +256,7 @@ class HlsDownloader {
     required String dir,
     required List<HlsSegment> segments,
     required int total,
-    required List<int>? keyBytes,
-    required HlsKey? key,
+    required bool encrypted,
     required void Function(int done, int total) onProgress,
     required CancelToken? cancelToken,
   }) async {
@@ -263,16 +291,9 @@ class HlsDownloader {
           if (bytes.isEmpty) {
             throw StateError('HLS 分片返回空 body: ${seg.uri}');
           }
-          final List<int> data;
-          if (keyBytes != null && key != null) {
-            final iv = key.ivHex != null
-                ? AesDecryptor.ivFromHex(key.ivHex!)
-                : AesDecryptor.ivFromSequence(seg.mediaSequence);
-            data = await _decryptInIsolate(bytes, keyBytes, iv);
-          } else {
-            data = bytes; // getBytes 返回的已是独立缓冲，无需再拷一份
-          }
-          await _writeAtomic(_segPath(dir, seg.index), data);
+          final path =
+              encrypted ? _encSegPath(dir, seg.index) : _segPath(dir, seg.index);
+          await _writeAtomic(path, bytes);
           done++;
           onProgress(done, total);
         } on UrlExpiredException catch (e) {
@@ -299,17 +320,6 @@ class HlsDownloader {
     if (expired != null) throw expired!;
   }
 
-  /// 整片解密 CPU 密集（实测 0.6-1.3s/片），放到 isolate 跑，cipher 在
-  /// 闭包内构造（pointycastle 对象不跨 isolate）。独立成静态方法是刻意的：
-  /// 闭包会连带捕获整个词法上下文，写在 worker 里会把不可发送的
-  /// CancelToken 一起拖进 isolate 消息导致运行时报错。
-  static Future<Uint8List> _decryptInIsolate(
-    List<int> bytes,
-    List<int> key,
-    Uint8List iv,
-  ) =>
-      Isolate.run(() => AesDecryptor.decryptCbc(bytes, key, iv));
-
   /// 原子写：先写 `.tmp` 并 flush，再 rename 到目标；rename 是同名同盘的原子操作。
   Future<void> _writeAtomic(String path, List<int> bytes) async {
     final tmp = File('$path.tmp');
@@ -317,12 +327,21 @@ class HlsDownloader {
     await tmp.rename(path);
   }
 
-  bool _segDone(String dir, int index) {
-    final f = File(_segPath(dir, index));
-    return f.existsSync() && f.lengthSync() > 0;
+  bool _segDone(String dir, int index) => _existingSegPath(dir, index) != null;
+
+  /// 已完成分片的实际路径：明文 `seg_<n>.ts` 优先（兼容旧版下载即解密的产物），
+  /// 其次密文 `seg_<n>.ts.enc`；都不存在（或为空文件）返回 null。
+  String? _existingSegPath(String dir, int index) {
+    for (final path in [_segPath(dir, index), _encSegPath(dir, index)]) {
+      final f = File(path);
+      if (f.existsSync() && f.lengthSync() > 0) return path;
+    }
+    return null;
   }
 
   String _segPath(String dir, int index) => p.join(dir, 'seg_$index.ts');
+
+  String _encSegPath(String dir, int index) => p.join(dir, 'seg_$index.ts.enc');
 
   void _throwIfCancelled(CancelToken? cancelToken) {
     if (cancelToken != null && cancelToken.isCancelled) {

@@ -47,7 +47,7 @@ List<int> _range(int start, int end) =>
 
 /// 假 remuxer：默认成功即产出 outMp4；可注入 [gate] 卡住 remux（cancel 时放行），
 /// 或 [ok]=false 模拟失败；[reportProgress] 时按输入字节回报两笔递增进度。
-/// 记录 cleanup / cancel 调用。
+/// 记录 cleanup / cancel 调用与最近一次收到的 [lastCrypto]。
 class _FakeRemuxer implements Remuxer {
   _FakeRemuxer({this.ok = true, this.gate, this.reportProgress = false});
 
@@ -56,6 +56,7 @@ class _FakeRemuxer implements Remuxer {
   final bool reportProgress;
   int cleanupCalls = 0;
   final List<String> canceled = [];
+  TransmuxCrypto? lastCrypto;
 
   @override
   Future<RemuxResult> remux({
@@ -63,8 +64,10 @@ class _FakeRemuxer implements Remuxer {
     required List<String> segmentFiles,
     required String outMp4,
     required String dir,
+    TransmuxCrypto? crypto,
     void Function(int bytes)? onProgress,
   }) async {
+    lastCrypto = crypto;
     if (gate != null) await gate!.future;
     if (reportProgress) {
       var total = 0;
@@ -202,6 +205,35 @@ _FakeAdapter _hlsAdapter() => _FakeAdapter((o, c) async {
       if (url.endsWith('/seg0.ts')) return _bytesBody(200, _range(0, 10));
       if (url.endsWith('/seg1.ts')) return _bytesBody(200, _range(10, 20));
       if (url.endsWith('/seg2.ts')) return _bytesBody(200, _range(20, 30));
+      return _bytesBody(404, const []);
+    });
+
+const String _encHlsKeyIvHex = '000102030405060708090a0b0c0d0e0f';
+
+final Uint8List _encHlsKey =
+    Uint8List.fromList(List<int>.generate(16, (i) => i * 3 & 0xff));
+
+const String _encHlsPlaylist = '#EXTM3U\n'
+    '#EXT-X-VERSION:3\n'
+    '#EXT-X-TARGETDURATION:4\n'
+    '#EXT-X-MEDIA-SEQUENCE:0\n'
+    '#EXT-X-KEY:METHOD=AES-128,URI="key.bin",IV=0x$_encHlsKeyIvHex\n'
+    '#EXTINF:4.0,\nseg0.ts\n'
+    '#EXTINF:4.0,\nseg1.ts\n'
+    '#EXTINF:4.0,\nseg2.ts\n'
+    '#EXT-X-ENDLIST\n';
+
+/// AES-128 加密 3 片 HLS 适配器。分片给任意字节即可：下载阶段不解密，
+/// 假 remuxer 也不消费，engine 只需把 key/IV 透传。
+_FakeAdapter _encHlsAdapter() => _FakeAdapter((o, c) async {
+      final url = o.uri.toString();
+      if (url.endsWith('/index.m3u8')) {
+        return _bytesBody(200, _encHlsPlaylist.codeUnits);
+      }
+      if (url.endsWith('/key.bin')) return _bytesBody(200, _encHlsKey);
+      if (url.endsWith('/seg0.ts')) return _bytesBody(200, _range(0, 16));
+      if (url.endsWith('/seg1.ts')) return _bytesBody(200, _range(16, 32));
+      if (url.endsWith('/seg2.ts')) return _bytesBody(200, _range(32, 48));
       return _bytesBody(404, const []);
     });
 
@@ -369,6 +401,7 @@ void main() {
     expect(t.mp4Path, '$dir/video.mp4');
     expect(File(t.mp4Path!).existsSync(), isTrue);
     expect(remuxer.cleanupCalls, 1);
+    expect(remuxer.lastCrypto, isNull, reason: '未加密源不应带 crypto');
     expect(
       rec.transitions('t2'),
       [
@@ -1278,6 +1311,38 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 20));
     expect(engine.tasks['b']!.status, TaskStatus.completed);
     expect(engine.pendingIntentCount, 0);
+
+    await rec.dispose();
+    await engine.dispose();
+  });
+
+  test('25. hls 加密源：引擎把 key/ivByPath 组成 crypto 透传给 remuxer', () async {
+    final remuxer = _FakeRemuxer();
+    final store = MemoryTaskStore();
+    final engine = DownloadEngine(
+      store: store,
+      mp4Downloader: _mp4Dl(_idleAdapter()),
+      hlsDownloader: _hlsDl(_encHlsAdapter()),
+      remuxer: remuxer,
+    );
+    final rec = _Recorder(engine);
+
+    final dir = mkDir('t25');
+    engine.submit(_task('t25',
+        kind: SourceKind.hls,
+        url: 'https://cdn/hls/index.m3u8',
+        dir: dir));
+    await rec.wait('t25', TaskStatus.completed);
+
+    final crypto = remuxer.lastCrypto;
+    expect(crypto, isNotNull, reason: '加密源必须把 crypto 透传给 remuxer');
+    expect(crypto!.key, _encHlsKey);
+    final iv = List<int>.generate(16, (i) => i); // 0x000102...0f
+    expect(crypto.ivByPath, {
+      '$dir/seg_0.ts.enc': iv,
+      '$dir/seg_1.ts.enc': iv,
+      '$dir/seg_2.ts.enc': iv,
+    });
 
     await rec.dispose();
     await engine.dispose();

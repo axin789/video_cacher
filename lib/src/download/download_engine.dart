@@ -352,11 +352,15 @@ class DownloadEngine {
     ));
 
     final outMp4 = p.join(task.dir, 'video.mp4');
+    // 加密源的分片以密文落盘（seg_<n>.ts.enc），key/IV 透传给 remux worker
+    // 在 isolate 内解密（解密后置，下载阶段纯网络 IO）。
+    final key = result.key;
     final res = await _remuxer.remux(
       taskId: taskId,
       segmentFiles: result.segmentFiles,
       outMp4: outMp4,
       dir: task.dir,
+      crypto: key == null ? null : TransmuxCrypto(key, result.ivByPath),
       onProgress: (fed) => _onProgress(taskId, fed, totalIn),
     );
 
