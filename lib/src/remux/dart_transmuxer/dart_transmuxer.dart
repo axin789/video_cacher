@@ -78,6 +78,8 @@ class DartTransmuxer implements Remuxer {
       final bytes = await File(path).readAsBytes();
       totalBytes += bytes.length;
       demux.feed(bytes);
+      // PMT 一见即校验视频编码：h265 等大任务不必读完全部分片才报错
+      _failFastOnPmt(demux);
     }
     demux.finish();
 
@@ -211,6 +213,35 @@ class DartTransmuxer implements Remuxer {
     sw.stop();
     _log('done: wrote ${built.bytes.length} bytes in ${sw.elapsedMilliseconds}ms');
     return RemuxResult(ok: true, outMp4: outMp4);
+  }
+
+  /// PMT 已见但视频不是 h264 时立即失败，错误里列出 PMT 全部 stream_type。
+  /// PMT 出现在后续分片的流仍走原有的流尾兜底检查。
+  void _failFastOnPmt(TsDemuxer demux) {
+    if (!demux.pmtSeen) return;
+    if (demux.videoStreamType == TsStreamType.h264) return;
+    final types = demux.pmtStreamTypes.map((t) {
+      final hex = '0x${t.toRadixString(16).padLeft(2, '0')}';
+      if (TsStreamType.isVideo(t)) return 'video=$hex${_codecLabel(t)}';
+      if (TsStreamType.isAudio(t)) return 'audio=$hex${_codecLabel(t)}';
+      return 'other=$hex';
+    }).join(' ');
+    throw UnsupportedStreamException(
+      'PMT stream types: $types — only h264+aac supported',
+    );
+  }
+
+  static String _codecLabel(int t) {
+    switch (t) {
+      case TsStreamType.h264:
+        return '(h264)';
+      case TsStreamType.hevc:
+        return '(hevc)';
+      case TsStreamType.aacAdts:
+        return '(aac)';
+      default:
+        return '';
+    }
   }
 
   @override

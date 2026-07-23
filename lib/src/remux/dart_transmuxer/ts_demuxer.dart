@@ -120,6 +120,11 @@ class TsDemuxer {
   ElementaryStream? video;
   ElementaryStream? audio;
 
+  /// PMT 中列出的全部 stream_type（按出现顺序，供不支持时报错用）。
+  final List<int> pmtStreamTypes = [];
+
+  bool _pmtSeen = false;
+
   final BytesBuilder _leftover = BytesBuilder(copy: false);
 
   /// PSI（PAT/PMT）section 跨 TS 包的积累缓冲：pid -> 已收 section 字节。
@@ -127,6 +132,9 @@ class TsDemuxer {
 
   int? get videoStreamType => video?.streamType;
   int? get audioStreamType => audio?.streamType;
+
+  /// 是否已解析到含 ES 条目的 PMT（供上层 fail-fast 判断）。
+  bool get pmtSeen => _pmtSeen;
 
   void feed(Uint8List chunk) {
     Uint8List data;
@@ -235,17 +243,30 @@ class TsDemuxer {
     final end = p.length - 4;
     final programInfoLen = ((p[10] & 0x0f) << 8) | p[11];
     int idx = 12 + programInfoLen;
+    pmtStreamTypes.clear();
+    int? vPid, vType, aPid, aType;
     while (idx + 5 <= end) {
       final streamType = p[idx];
       final ePid = ((p[idx + 1] & 0x1f) << 8) | p[idx + 2];
       final esInfoLen = ((p[idx + 3] & 0x0f) << 8) | p[idx + 4];
-      if (TsStreamType.isVideo(streamType) && video == null) {
-        video = ElementaryStream(ePid, streamType);
-      } else if (TsStreamType.isAudio(streamType) && audio == null) {
-        audio = ElementaryStream(ePid, streamType);
+      pmtStreamTypes.add(streamType);
+      if (TsStreamType.isVideo(streamType) && vType == null) {
+        vType = streamType;
+        vPid = ePid;
+      } else if (TsStreamType.isAudio(streamType)) {
+        // 多路音频优先选 AAC：前置 AC-3/MP2 不再让整条流被拒
+        if (aType == null ||
+            (aType != TsStreamType.aacAdts &&
+                streamType == TsStreamType.aacAdts)) {
+          aType = streamType;
+          aPid = ePid;
+        }
       }
       idx += 5 + esInfoLen;
     }
+    if (vType != null) video = ElementaryStream(vPid!, vType);
+    if (aType != null) audio = ElementaryStream(aPid!, aType);
+    if (pmtStreamTypes.isNotEmpty) _pmtSeen = true;
   }
 
   void finish() {

@@ -223,6 +223,26 @@ void main() {
       expect(d.video, isNull); // 缺失 -> 上层最终报 Unsupported，而非崩溃
     });
 
+    test('多路音频时优先选 AAC（前置 AC-3 不再劫持）', () {
+      final pmt = <int>[
+        0x00, 0x02, 0xb0, 0x1c, // section_length = 28
+        0x00, 0x01, 0xc1, 0x00, 0x00,
+        0xe1, 0x00, 0xf0, 0x00,
+        0x81, 0xe1, 0x03, 0xf0, 0x00, // AC-3 在前
+        0x1b, 0xe1, 0x01, 0xf0, 0x00, // h264
+        0x0f, 0xe1, 0x02, 0xf0, 0x00, // AAC 在后
+        0x00, 0x00, 0x00, 0x00,
+      ];
+      final d = TsDemuxer();
+      d.feed(_tsPacket(pid: 0, pusi: true, payload: _pat()));
+      d.feed(_tsPacket(pid: 0x0100, pusi: true, payload: pmt));
+      d.finish();
+
+      expect(d.videoStreamType, TsStreamType.h264);
+      expect(d.audioStreamType, TsStreamType.aacAdts);
+      expect(d.audio!.pid, 0x0102);
+    });
+
     test('PTS 33 位环绕展开为单调 64 位', () {
       const max33 = 1 << 33;
       final d = TsDemuxer();
