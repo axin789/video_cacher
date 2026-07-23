@@ -25,6 +25,7 @@ import 'models/task_status.dart';
 class VideoCacher {
   VideoCacher._();
 
+  /// 全局单例。所有 API 经由它调用。
   static final VideoCacher instance = VideoCacher._();
 
   bool _inited = false;
@@ -109,10 +110,11 @@ class VideoCacher {
     }
   }
 
-  /// 对外任务事件流。
+  /// 对外任务事件流（广播）。纯进度事件按任务节流（约 10 次/秒），状态变更即时；
+  /// 进度字段的量纲随阶段变化，见 [TaskEvent]。
   Stream<TaskEvent> get taskStream => _engine.events;
 
-  /// 内存任务表只读快照。
+  /// 内存任务表只读快照（taskId → 任务）。UI 列表可依此重建。
   Map<String, DownloadTask> get tasks => _engine.tasks;
 
   /// 提交或续传一个下载任务。已存在且未完成 → 续传；否则识别源类型后新建提交。
@@ -150,15 +152,21 @@ class VideoCacher {
     return task;
   }
 
+  /// 暂停任务（下载或 remuxing 中均可）。已完成的任务不受影响。
   void pause(String id) => _engine.pause(id);
 
+  /// 继续 paused/failed/queued 的任务（断点续传）。
   void resume(String id) => _engine.resume(id);
 
+  /// 取消任务；[deleteFiles] 为 true 时同时删除任务目录（分片与半成品）。
+  /// 已完成的任务不受影响。
   Future<void> cancel(String id, {bool deleteFiles = false}) =>
       _engine.cancel(id, deleteFiles: deleteFiles);
 
+  /// 把等待中的任务移到队首优先执行。
   void prioritize(String id) => _engine.prioritize(id);
 
+  /// 调整最大并发任务数（立即生效，不中断已在运行的任务）。
   Future<void> setMaxConcurrency(int n) => _engine.setMaxConcurrency(n);
 
   /// 删除任务：引擎侧移除（中断 + 出内存表 + 删存储记录）→ 删任务目录。
@@ -175,6 +183,8 @@ class VideoCacher {
     }
   }
 
+  /// 释放全部资源：停引擎（在途任务落 paused/canceled）、关 HTTP 层。
+  /// 之后可重新 [ensureInitialized]。
   Future<void> dispose() async {
     await _eventSub?.cancel();
     _eventSub = null;

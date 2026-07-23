@@ -3,15 +3,30 @@ import 'task_status.dart';
 /// 用于区分「未传参」与「显式传 null」的哨兵。
 const Object _undefined = Object();
 
-/// 内部任务记录，以 JSON 持久化。不含分片明细（从磁盘推导）。
+/// 下载任务记录，以 JSON 持久化。不含分片明细（从磁盘推导）。
 class DownloadTask {
+  /// 任务唯一 id（即 enqueue 传入的业务 id）。
   final String taskId;
+
+  /// 业务侧影片 id（当前与 [taskId] 一致，保留字段）。
   final String movieId;
+
+  /// 显示名，也用作存相册时的标题。
   final String name;
+
+  /// 封面图地址（仅存储供 UI 使用，包内不下载）。
   final String coverImg;
+
+  /// 下载地址。URL 刷新或 HLS 变体跳转后更新为最终生效的地址。
   final String url;
+
+  /// 任务工作目录（分片、成片 mp4 都落在这里）。
   final String dir;
+
+  /// 源类型（mp4 直链 / HLS）。mp4 任务嗅探到 m3u8 内容会被自动纠正为 hls。
   final SourceKind kind;
+
+  /// 当前状态，见 [TaskStatus]。
   final TaskStatus status;
 
   /// 进度量纲随阶段变化（[progress] 恒为 0..1）：mp4 下载阶段为字节；
@@ -22,14 +37,25 @@ class DownloadTask {
   /// 已完成量，量纲同 [totalBytes]。
   final int downloadedBytes;
 
+  /// 成片 mp4 的本地绝对路径；completed 前为 null。
   final String? mp4Path;
 
   /// mp4 断点续传用的资源 ETag（HEAD 返回时即持久化，冷启动后仍可校验内容未变）。
   final String? etag;
+
+  /// 完成后是否自动保存到系统相册。
   final bool saveToAlbum;
+
+  /// 是否已成功保存到相册。
   final bool albumSaved;
+
+  /// 最近一次相册保存的失败原因；非空后不再自动重试，仅可手动 copyToAlbum。
   final String? albumError;
+
+  /// failed 时的错误信息；其余状态为 null。
   final String? error;
+
+  /// 任务创建时间（epoch 毫秒）。
   final int createdAtMs;
 
   const DownloadTask({
@@ -56,13 +82,16 @@ class DownloadTask {
   double get progress =>
       totalBytes > 0 ? (downloadedBytes / totalBytes).clamp(0, 1) : 0;
 
+  /// 是否已完成（completed）。
   bool get isFinished => status == TaskStatus.completed;
 
+  /// 是否处于活动态（queued/running/remuxing）。
   bool get isActive =>
       status == TaskStatus.running ||
       status == TaskStatus.queued ||
       status == TaskStatus.remuxing;
 
+  /// 复制并覆盖部分字段。可空字段（如 [mp4Path]、[error]）支持显式传 null 清空。
   DownloadTask copyWith({
     String? taskId,
     String? movieId,
@@ -104,6 +133,7 @@ class DownloadTask {
     );
   }
 
+  /// 序列化为 JSON（持久化用）。
   Map<String, dynamic> toJson() => {
         'taskId': taskId,
         'movieId': movieId,
@@ -124,6 +154,7 @@ class DownloadTask {
         'createdAtMs': createdAtMs,
       };
 
+  /// 从 JSON 恢复；缺失字段回退默认值，不抛异常。
   factory DownloadTask.fromJson(Map<String, dynamic> json) => DownloadTask(
         taskId: (json['taskId'] as String?) ?? '',
         movieId: (json['movieId'] as String?) ?? '',

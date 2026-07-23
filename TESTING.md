@@ -24,11 +24,23 @@
 - [ ] 最终任务状态为 completed
 - [ ] AES-128 加密流解密后可正常播放
 
-### C1 h265 预期失败
+### C1 h265 预期失败（首分片 fail-fast）
 
 - [ ] 创建 h265(HEVC) 的 m3u8 任务
-- [ ] 分片下载完成后转封装阶段失败
-- [ ] 任务状态为 failed，error 含 `UnsupportedStreamException`（暂不支持 h265，属预期行为）
+- [ ] 转封装阶段在**首个含 PMT 的分片**即失败，不空跑完全部分片
+- [ ] 任务状态为 failed，error 含 `UnsupportedStreamException` 且列出 PMT 全部 stream_type（属预期行为）
+
+### C2 不支持特性的播放列表（下载前即报错）
+
+- [ ] 分别构造含 SAMPLE-AES、key 轮换（多个不同 EXT-X-KEY）、EXT-X-MAP(fMP4)、
+      EXT-X-BYTERANGE、EXT-X-DISCONTINUITY 的 m3u8 任务
+- [ ] 任务在**下载任何分片（含 key）前**立即 failed
+- [ ] error 为 `UnsupportedPlaylistException` 且指明具体不支持的特性
+
+### C3 remuxing 阶段进度
+
+- [ ] HLS 任务进入 remuxing 后，进度条从 0 重新起步并持续前进（第二段 0..1）
+- [ ] completed 后 downloadedBytes/totalBytes 回填为最终 mp4 文件字节数
 
 ## D. URL 过期恢复
 
@@ -41,10 +53,17 @@
 - [ ] key 地址返回 404/410 后，可以刷新并继续
 - [ ] ts 地址返回 404/410 后，可以刷新并继续
 
+### D3 弱网中断（mp4）
+
+- [ ] mp4 下载中制造网络瞬断（如切飞行模式几秒再恢复、弱网工具限速断流）
+- [ ] 流中断后按 Range 自动续拉（有限次重试），无需手动 resume
+- [ ] 重试耗尽仍失败时任务落 failed，手动 resume 可从断点继续
+
 ## E. remux 过程中的取消语义
 
 - [ ] 启动 HLS remux
 - [ ] remux 过程中执行取消
+- [ ] 取消**立即生效**（remux isolate 被强停，进度即刻停止，不等当前分片喂完）
 - [ ] 任务状态变为 canceled
 - [ ] 不产出最终 mp4
 - [ ] 临时 remux 文件会被清理

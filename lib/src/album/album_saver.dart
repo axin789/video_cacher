@@ -4,8 +4,12 @@ import 'package:photo_manager/photo_manager.dart';
 
 /// 相册保存结果：结构化返回成功与否 + 失败原因，绝不抛异常。
 class AlbumSaveResult {
+  /// 是否保存成功。
   final bool ok;
+
+  /// 失败原因（权限被拒 / 文件缺失 / 底层异常）；成功时为 null。
   final String? error;
+
   const AlbumSaveResult(this.ok, [this.error]);
 }
 

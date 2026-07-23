@@ -6,8 +6,13 @@ class DownloadConfig {
   /// 单任务内分片并发数（HLS）。
   final int segConcurrency;
 
+  /// HTTP 连接超时。
   final Duration connectTimeout;
+
+  /// HTTP 接收超时（两次数据到达的最大间隔）。
   final Duration receiveTimeout;
+
+  /// 全部请求携带的 User-Agent。
   final String userAgent;
 
   /// URL 刷新最大重试次数。
@@ -30,6 +35,7 @@ class DownloadConfig {
     this.refreshTimeout = const Duration(seconds: 30),
   });
 
+  /// 复制并覆盖部分字段。
   DownloadConfig copyWith({
     int? maxConcurrency,
     int? segConcurrency,
