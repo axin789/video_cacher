@@ -57,6 +57,17 @@ class HlsDownloader {
   /// 单次 download 调用内最多追随几次 URL 刷新，超过则以底层错误放弃。
   static const int _maxRefreshes = 5;
 
+  /// 单个分片遇 5xx（如 CDN 回源超时 504）的额外重试次数。
+  /// HTTP 层已做秒级退避重试，这里再加一层「更慢」的分片级重试：源站过载时
+  /// 需要更长冷却，且一个分片失败不该直接判整个任务死。
+  static const int _segMaxRetries = 3;
+
+  /// 分片级重试的基础退避，按 1×/2×/4× 增长（2s / 4s / 8s）。
+  static const Duration _segRetryBackoff = Duration(seconds: 2);
+
+  /// 分片级重试也用尽后，刷新签名 URL 前的冷却时长（给源站喘息）。
+  static const Duration _serverCooldown = Duration(seconds: 10);
+
   HlsDownloader({
     required HttpClient http,
     required UrlRefresher refresher,
@@ -128,6 +139,7 @@ class HlsDownloader {
         }
 
         await _downloadSegments(
+          taskId: taskId,
           dir: dir,
           segments: segments,
           total: total,
@@ -172,6 +184,19 @@ class HlsDownloader {
             'hls',
             '[$taskId] ${e.statusCode} ${e.url} -> '
             '刷新入口（第 $refreshes/$_maxRefreshes 次）');
+        currentEntry = await _refresher.refresh(taskId);
+      } on HttpStatusException catch (e) {
+        // 分片级重试已用尽的 5xx：冷却后刷新签名 URL 再战（新签名常路由到
+        // 健康边缘节点）。已下好的分片保留，只补缺失的。
+        _throwIfCancelled(cancelToken);
+        if (e.statusCode < 500 || refreshes >= _maxRefreshes) rethrow;
+        refreshes++;
+        VideoCacherLog.d(
+            'hls',
+            '[$taskId] ${e.statusCode} 持续不可用 -> 冷却 ${_serverCooldown.inSeconds}s '
+            '后刷新入口重试（第 $refreshes/$_maxRefreshes 次）');
+        await Future<void>.delayed(_serverCooldown);
+        _throwIfCancelled(cancelToken);
         currentEntry = await _refresher.refresh(taskId);
       }
     }
@@ -253,6 +278,7 @@ class HlsDownloader {
   /// 任一分片命中 404/410 时，所有 worker 优雅收尾（保留已下好的分片），再抛
   /// [UrlExpiredException] 触发上层刷新重映射。取消/其它错误同样先收尾再冒泡。
   Future<void> _downloadSegments({
+    required String taskId,
     required String dir,
     required List<HlsSegment> segments,
     required int total,
@@ -275,8 +301,28 @@ class HlsDownloader {
     var next = 0;
     var aborted = false;
     UrlExpiredException? expired;
+    HttpStatusException? serverError;
     Object? fatal;
     StackTrace? fatalStack;
+
+    // 分片级重试：HTTP 层退避后仍 5xx（源站持续过载）时再等更久重试，
+    // 而不是让一个分片直接判死整个任务。404/410、取消按原语义立即冒泡。
+    Future<List<int>> fetchSegment(HlsSegment seg) async {
+      for (var attempt = 0;; attempt++) {
+        try {
+          return await _http.getBytes(seg.uri, cancelToken: cancelToken);
+        } on HttpStatusException catch (e) {
+          if (e.statusCode < 500 || attempt >= _segMaxRetries) rethrow;
+          final wait = _segRetryBackoff * (1 << attempt);
+          VideoCacherLog.d(
+              'hls',
+              '[$taskId] 分片 ${seg.index} 返回 ${e.statusCode}，'
+              '${wait.inSeconds}s 后重试（${attempt + 1}/$_segMaxRetries）');
+          await Future<void>.delayed(wait);
+          _throwIfCancelled(cancelToken);
+        }
+      }
+    }
 
     Future<void> worker() async {
       while (!aborted) {
@@ -284,8 +330,7 @@ class HlsDownloader {
         if (next >= pending.length) return;
         final seg = pending[next++];
         try {
-          final bytes =
-              await _http.getBytes(seg.uri, cancelToken: cancelToken);
+          final bytes = await fetchSegment(seg);
           // 空 body（如 CDN 异常 200 空响应）不能当成功：否则会落 0 字节 seg 文件，
           // 既污染产物又让下次 resume 判为未完成，前后不一致。视为该分片失败。
           if (bytes.isEmpty) {
@@ -299,6 +344,18 @@ class HlsDownloader {
         } on UrlExpiredException catch (e) {
           aborted = true;
           expired = e;
+          return;
+        } on HttpStatusException catch (e) {
+          // 分片级重试也用尽的 5xx：源站/边缘节点持续不可用。签名 URL 刷新后
+          // 常会路由到健康节点，故按「需刷新」处理而非直接判死整个任务。
+          if (e.statusCode >= 500) {
+            aborted = true;
+            serverError = e;
+            return;
+          }
+          aborted = true;
+          fatal = e;
+          fatalStack = StackTrace.current;
           return;
         } catch (e, st) {
           aborted = true;
@@ -318,6 +375,7 @@ class HlsDownloader {
       Error.throwWithStackTrace(fatal!, fatalStack!);
     }
     if (expired != null) throw expired!;
+    if (serverError != null) throw serverError!;
   }
 
   /// 原子写：先写 `.tmp` 并 flush，再 rename 到目标；rename 是同名同盘的原子操作。

@@ -102,6 +102,35 @@ ${segPrefix}seg2.ts
 #EXT-X-ENDLIST
 ''';
 
+  test('12. 分片 504 先失败后恢复：分片级重试，不判死任务', () async {
+    var seg1Calls = 0;
+    final adapter = _FakeAdapter((url) {
+      if (url.endsWith('/index.m3u8')) {
+        return _body(200, encMediaPlaylist('').codeUnits);
+      }
+      if (url.endsWith('/key.bin')) return _body(200, key);
+      if (url.endsWith('/seg0.ts')) return _body(200, _encrypt(p0, key, iv));
+      if (url.endsWith('/seg1.ts')) {
+        seg1Calls++;
+        // 前两次 504（HTTP 层重试也全 504），第三轮分片级重试才成功
+        if (seg1Calls <= 2) return _body(504, const <int>[]);
+        return _body(200, _encrypt(p1, key, iv));
+      }
+      if (url.endsWith('/seg2.ts')) return _body(200, _encrypt(p2, key, iv));
+      return _body(404, const <int>[]);
+    });
+
+    final r = await _downloader(adapter).download(
+      taskId: 't504',
+      entryUrl: 'https://h/index.m3u8',
+      dir: dir.path,
+    );
+
+    expect(r.segmentFiles.length, 3, reason: '504 恢复后应完整产出 3 片');
+    expect(seg1Calls, greaterThan(2), reason: 'seg1 应被分片级重试');
+    expect(File('${dir.path}/seg_1.ts.enc').existsSync(), isTrue);
+  }, timeout: const Timeout(Duration(seconds: 90)));
+
   test('1. 加密 happy path：密文原样落 .enc 不解密，key/ivByPath 齐全，进度到 3/3',
       () async {
     final adapter = _FakeAdapter((url) {

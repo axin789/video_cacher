@@ -15,9 +15,12 @@
   实测 4.9s → 2.2s（约 2.2×，Mac；真机单核 AES 更慢、收益更大）。内存上界为
   「当前片 + 至多 2 个前瞻片，且在飞字节不超过 24MB」，大分片源不会因前瞻抬高
   峰值；产物字节不变（sha256 校验）。
-- **修复偶发 504/5xx 直接判定任务失败**：瞬时故障重试从「2 次、120ms 起」放宽为
-  「3 次、1s 起指数退避」（约 7 秒窗口，网关超时通常可恢复），可通过
-  `DownloadConfig.transientMaxRetries` / `transientBackoff` 配置。
+- **修复偶发 504/5xx 直接判定任务失败**（三层韧性）：
+  ① HTTP 层瞬时故障重试放宽为「3 次、1s 起指数退避」（可配
+  `DownloadConfig.transientMaxRetries` / `transientBackoff`）；
+  ② HLS 新增**分片级重试**：单个分片 5xx 再等 2s/4s/8s 重试，源站过载需要更长
+  冷却；③ 分片级也用尽时**冷却 10s 后刷新签名 URL 重试**（新签名常路由到健康
+  边缘节点），已下分片全部保留。此前一个分片 504 会直接判死整个任务。
 - transmux 日志新增阶段耗时 `phases: decryptWait=…ms demux=…ms build=…ms`，
   便于定位「处理中」阶段的真实瓶颈。
 - `DownloadConfig` 新增 `headers`（自定义请求头，如 CDN 防盗链 Referer）。
