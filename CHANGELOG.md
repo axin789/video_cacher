@@ -1,3 +1,13 @@
+## 0.1.1
+
+- 修复门面未使用按配置构建的 Dio 导致超时/User-Agent 失效（生产环境无任何超时）。
+- 修复相册保存失败后无限自动重试：首次失败即停，仅可手动 `copyToAlbum` 重试。
+- 修复任务存储并发写竞态与删除后复活（按 taskId 串行化写入）。
+- URL 刷新回调增加超时（`refreshTimeout`，默认 30s），防止回调挂起泄漏并发槽。
+- MP4 下载嗅探响应首块，m3u8 播放列表文本不再被误存成视频成片。
+- 补齐 completed 状态守卫（pause/cancel 不再降级已完成任务）与完成提交前的取消/暂停意图复查。
+- `ensureInitialized` 增加在飞守卫，并发调用不再双重初始化；`dispose` 顺序修正（先停引擎再关 HTTP）。
+
 ## 0.1.0
 
 - 全新纯 Dart 重写：下载引擎（dio）、JSON 任务存储、纯 Dart transmuxer（h264+AAC TS → mp4）。
