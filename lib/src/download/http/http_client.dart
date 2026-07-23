@@ -67,7 +67,7 @@ class HttpClient {
       BaseOptions(
         connectTimeout: config.connectTimeout,
         receiveTimeout: config.receiveTimeout,
-        headers: {'User-Agent': config.userAgent},
+        headers: {'User-Agent': config.userAgent, ...config.headers},
         // 自行判定状态码，dio 不因非 2xx 抛异常，让 404/410 翻译更干净。
         validateStatus: (_) => true,
       ),

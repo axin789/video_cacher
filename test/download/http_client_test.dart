@@ -215,6 +215,16 @@ void main() {
       expect(options.receiveTimeout, config.receiveTimeout);
       expect(options.headers['User-Agent'], config.userAgent);
     });
+
+    test('自定义 headers 合并进全部请求，同名覆盖 User-Agent', () {
+      const config = DownloadConfig(
+        headers: {'referer': 'https://app.example.com', 'User-Agent': 'ua2'},
+      );
+      final c = HttpClient(config);
+      final options = c.dioForTesting.options;
+      expect(options.headers['referer'], 'https://app.example.com');
+      expect(options.headers['User-Agent'], 'ua2');
+    });
   });
 
   group('HttpClient CancelToken 取消立即传播', () {

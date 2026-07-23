@@ -15,6 +15,10 @@ class DownloadConfig {
   /// 全部请求携带的 User-Agent。
   final String userAgent;
 
+  /// 全部请求携带的自定义请求头（如 CDN 防盗链的 Referer）。
+  /// 与 [userAgent] 合并，同名时以此处为准。
+  final Map<String, String> headers;
+
   /// URL 刷新最大重试次数。
   final int refreshMaxRetries;
 
@@ -30,6 +34,7 @@ class DownloadConfig {
     this.connectTimeout = const Duration(seconds: 15),
     this.receiveTimeout = const Duration(seconds: 30),
     this.userAgent = 'video_cacher/1.0',
+    this.headers = const {},
     this.refreshMaxRetries = 3,
     this.refreshBackoff = const Duration(milliseconds: 500),
     this.refreshTimeout = const Duration(seconds: 30),
@@ -42,6 +47,7 @@ class DownloadConfig {
     Duration? connectTimeout,
     Duration? receiveTimeout,
     String? userAgent,
+    Map<String, String>? headers,
     int? refreshMaxRetries,
     Duration? refreshBackoff,
     Duration? refreshTimeout,
@@ -52,6 +58,7 @@ class DownloadConfig {
       connectTimeout: connectTimeout ?? this.connectTimeout,
       receiveTimeout: receiveTimeout ?? this.receiveTimeout,
       userAgent: userAgent ?? this.userAgent,
+      headers: headers ?? this.headers,
       refreshMaxRetries: refreshMaxRetries ?? this.refreshMaxRetries,
       refreshBackoff: refreshBackoff ?? this.refreshBackoff,
       refreshTimeout: refreshTimeout ?? this.refreshTimeout,
