@@ -407,4 +407,51 @@ void main() {
     expect(r.totalBytes, 100);
     expect(File(part).existsSync(), isFalse);
   });
+
+  test('12. 流中途瞬断：按已写字节 Range 续拉一次后完成，恰好 2 个 GET', () async {
+    final full = _range(0, 100);
+    var gets = 0;
+    String? retryRange;
+    final adapter = _FakeAdapter((o) async {
+      if (o.method == 'HEAD') {
+        return _bytesBody(200, const [], headers: {
+          'content-length': ['100'],
+          'etag': ['"v1"'],
+          'accept-ranges': ['bytes'],
+        });
+      }
+      gets++;
+      if (gets == 1) {
+        // 吐 3 个分块（30 字节）后瞬断。
+        Stream<Uint8List> flaky() async* {
+          yield Uint8List.fromList(full.sublist(0, 10));
+          yield Uint8List.fromList(full.sublist(10, 20));
+          yield Uint8List.fromList(full.sublist(20, 30));
+          throw DioException(
+              requestOptions: o, type: DioExceptionType.connectionError);
+        }
+
+        return ResponseBody(flaky(), 200, headers: {
+          'content-length': ['100'],
+        });
+      }
+      retryRange = _hdr(o, 'Range');
+      return _bytesBody(206, full.sublist(30), headers: {
+        'content-length': ['70'],
+        'content-range': ['bytes 30-99/100'],
+      });
+    });
+    final dl = _downloader(adapter);
+
+    final r = await dl.download(
+      taskId: 't12',
+      url: 'https://cdn/a.mp4',
+      destPath: dest,
+    );
+
+    expect(gets, 2, reason: '瞬断后恰好一次续拉');
+    expect(retryRange, 'bytes=30-');
+    expect(File(dest).readAsBytesSync(), full);
+    expect(r.totalBytes, 100);
+  });
 }

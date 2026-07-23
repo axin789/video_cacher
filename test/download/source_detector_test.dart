@@ -15,6 +15,7 @@ class _RecordingAdapter implements HttpClientAdapter {
   final Map<String, List<String>> headers;
 
   int fetchCount = 0;
+  final List<RequestOptions> requests = [];
 
   _RecordingAdapter(
     this.statusCode, {
@@ -29,6 +30,7 @@ class _RecordingAdapter implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) async {
     fetchCount++;
+    requests.add(options);
     return ResponseBody.fromBytes(
       Uint8List.fromList(body),
       statusCode,
@@ -98,5 +100,29 @@ void main() {
     final d = _detectorWith(adapter);
     final kind = await d.detect('https://cdn/stream/unknown');
     expect(kind, SourceKind.mp4);
+  });
+
+  test('嗅探是区间请求（Range: bytes=0-63），#EXTM3U 仍识别为 hls', () async {
+    final adapter = _RecordingAdapter(
+      206,
+      body: utf8.encode('#EXTM3U\n#EXT-X-VERSION:3\n'),
+    );
+    final d = _detectorWith(adapter);
+    final kind = await d.detect('https://cdn/stream/ambiguous');
+    expect(kind, SourceKind.hls);
+
+    // 嗅探绝不能整包 GET 视频：GET 必须带开头 64 字节的 Range。
+    final get = adapter.requests.firstWhere((o) => o.method == 'GET');
+    expect(get.headers['Range'], 'bytes=0-63');
+  });
+
+  test('嗅探区间请求：非 m3u8 内容 -> mp4，同样只拉开头字节', () async {
+    final adapter = _RecordingAdapter(206, body: <int>[0, 0, 0, 24]);
+    final d = _detectorWith(adapter);
+    final kind = await d.detect('https://cdn/stream/binary');
+    expect(kind, SourceKind.mp4);
+
+    final get = adapter.requests.firstWhere((o) => o.method == 'GET');
+    expect(get.headers['Range'], 'bytes=0-63');
   });
 }

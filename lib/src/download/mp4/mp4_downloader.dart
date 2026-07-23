@@ -37,6 +37,10 @@ class Mp4Downloader {
   /// 单次 download 调用内最多追随几次 URL 刷新，超过则以底层错误放弃。
   static const int _maxUrlRefreshes = 3;
 
+  /// 流消费中途瞬断（超时/连接错/5xx）的最大续拉次数与退避。
+  static const int _maxStreamRetries = 2;
+  static const Duration _streamRetryBackoff = Duration(milliseconds: 500);
+
   Mp4Downloader({required HttpClient http, required UrlRefresher refresher})
       : _http = http,
         _refresher = refresher;
@@ -157,39 +161,81 @@ class Mp4Downloader {
 
     // totalBytes：206 优先用 Content-Range 的总长，否则 HEAD content-length；
     // 200 时 body 即全量，用响应 content-length，回退 HEAD。
-    final total = _resolveTotal(resp, resuming, writeOffset, totalLen);
+    var total = _resolveTotal(resp, resuming, writeOffset, totalLen);
 
-    final sink = part.openSync(
-      mode: resuming ? FileMode.writeOnlyAppend : FileMode.writeOnly,
-    );
     var written = writeOffset;
-    // 仅全新写（offset 0）嗅探首个分块是否 m3u8 文本，续传跳过。
-    var sniff = writeOffset == 0;
     var aborted = false;
+    // 流消费中途瞬断：按已写字节 Range 续拉同一 URL，有限次重试；
+    // 取消/URL 过期不在此兜，保持原有语义冒泡。
+    var streamRetries = 0;
     try {
-      final stream = resp.data?.stream;
-      if (stream != null) {
-        await for (final chunk in stream) {
-          if (sniff) {
-            sniff = false;
-            if (_looksLikeM3u8(chunk)) {
-              // 播放列表文本被当 mp4 下（源类型误判）：中止并清 .part，不落成片。
-              aborted = true;
-              throw StateError('URL 内容是 m3u8 播放列表而非视频（源类型误判）');
+      var stream = resp.data?.stream;
+      while (stream != null) {
+        final sink = part.openSync(
+          mode: written > 0 ? FileMode.writeOnlyAppend : FileMode.writeOnly,
+        );
+        // 仅从 0 起写时嗅探首个分块是否 m3u8 文本，续写跳过。
+        var sniff = written == 0;
+        try {
+          await for (final chunk in stream) {
+            if (sniff) {
+              sniff = false;
+              if (_looksLikeM3u8(chunk)) {
+                // 播放列表文本被当 mp4 下（源类型误判）：中止并清 .part，不落成片。
+                aborted = true;
+                throw StateError('URL 内容是 m3u8 播放列表而非视频（源类型误判）');
+              }
             }
+            sink.writeFromSync(chunk);
+            written += chunk.length;
+            onProgress(written, total > 0 ? total : written);
           }
-          sink.writeFromSync(chunk);
-          written += chunk.length;
-          onProgress(written, total > 0 ? total : written);
+          stream = null; // 消费完毕
+        } on DioException catch (e) {
+          if (!_isTransientMidStream(e) || streamRetries >= _maxStreamRetries) {
+            rethrow;
+          }
+          streamRetries++;
+          VideoCacherLog.d(
+              'mp4',
+              '[$taskId] 流中断(${e.type.name})，'
+              '第 $streamRetries/$_maxStreamRetries 次从 $written 续拉');
+          await Future<void>.delayed(_streamRetryBackoff);
+          final retry = await _http.getStream(
+            url,
+            rangeStart: written > 0 ? written : null,
+            etag: written > 0 ? ifRange : null,
+            cancelToken: cancelToken,
+          );
+          final retryResuming = written > 0 && retry.statusCode == 206;
+          // 续拉被回 200 全量（服务端忽略 Range）：丢弃已写从 0 重来。
+          if (!retryResuming) written = 0;
+          total = _resolveTotal(retry, retryResuming, written, totalLen);
+          stream = retry.data?.stream;
+        } finally {
+          sink.closeSync();
         }
       }
     } finally {
-      sink.closeSync();
       if (aborted && part.existsSync()) part.deleteSync();
     }
 
     final resolvedTotal = total > 0 ? total : written;
     return _finish(part, dest, url, headEtag, resolvedTotal, onProgress);
+  }
+
+  /// 流消费中可安全续拉的瞬时错误：连接/超时类，或 5xx。取消与 4xx 不算。
+  static bool _isTransientMidStream(DioException e) {
+    switch (e.type) {
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.receiveTimeout:
+      case DioExceptionType.connectionError:
+        return true;
+      case DioExceptionType.badResponse:
+        return (e.response?.statusCode ?? 0) >= 500;
+      default:
+        return false;
+    }
   }
 
   /// rename `.part` → dest，回调一次终态进度，返回结果。

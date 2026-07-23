@@ -147,6 +147,28 @@ class HttpClient {
     return resp.data ?? const <int>[];
   }
 
+  /// 区间 GET（`Range: bytes=<start>-<end>`，闭区间），供内容嗅探等只需开头
+  /// 少量字节的场景。服务端忽略 Range 时会整包返回，调用方需自行截断。
+  Future<List<int>> getBytesRange(
+    String url,
+    int start,
+    int end, {
+    CancelToken? cancelToken,
+  }) async {
+    final resp = await _send<List<int>>(
+      () => _dio.get<List<int>>(
+        url,
+        options: Options(
+          responseType: ResponseType.bytes,
+          headers: {'Range': 'bytes=$start-$end'},
+        ),
+        cancelToken: cancelToken,
+      ),
+      url,
+    );
+    return resp.data ?? const <int>[];
+  }
+
   void close() => _dio.close(force: true);
 
   /// 统一的发送 + 状态翻译 + 有限重试。

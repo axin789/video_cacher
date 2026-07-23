@@ -59,10 +59,11 @@ class SourceDetector {
     }
   }
 
-  /// 3. 内容嗅探：开头是否为 `#EXTM3U`。否则默认 mp4。
+  /// 3. 内容嗅探：区间请求只拉开头 64 字节判断是否 `#EXTM3U`（不整包下载视频），
+  /// 服务端忽略 Range 时下方截断兜底。否则默认 mp4。
   Future<SourceKind> _bySniff(String url, CancelToken? token) async {
     try {
-      final bytes = await _http.getBytes(url, cancelToken: token);
+      final bytes = await _http.getBytesRange(url, 0, 63, cancelToken: token);
       final head = utf8
           .decode(bytes.length > 64 ? bytes.sublist(0, 64) : bytes,
               allowMalformed: true)
