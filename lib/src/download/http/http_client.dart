@@ -102,12 +102,6 @@ class HttpClient {
         contentLength: cl, etag: tag, acceptRanges: ar, contentType: ct);
   }
 
-  /// 便捷方法：只取 content-length。
-  Future<int?> contentLength(String url,
-      {String? etag, CancelToken? cancelToken}) async {
-    return (await head(url, etag: etag, cancelToken: cancelToken)).contentLength;
-  }
-
   /// 流式 GET，供大文件/分片边下边写。
   ///
   /// [rangeStart] 非空时带 `Range: bytes=<start>-`；[etag] 非空时带 `If-Range`
