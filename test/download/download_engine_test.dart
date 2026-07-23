@@ -125,6 +125,7 @@ class _HookedMp4Downloader extends Mp4Downloader {
     required String destPath,
     String? partPath,
     String? knownEtag,
+    void Function(String? etag)? onEtag,
     void Function(int downloaded, int total) onProgress = _noopProgress,
     CancelToken? cancelToken,
   }) async {
@@ -134,6 +135,7 @@ class _HookedMp4Downloader extends Mp4Downloader {
       destPath: destPath,
       partPath: partPath,
       knownEtag: knownEtag,
+      onEtag: onEtag,
       onProgress: onProgress,
       cancelToken: cancelToken,
     );
@@ -1033,6 +1035,36 @@ void main() {
     expect(rec.seq['t19']!.contains(TaskStatus.remuxing), isFalse,
         reason: '取消已落定，不得再进 remuxing（否则永远卡在 remuxing）');
     expect(rec.seq['t19']!.contains(TaskStatus.completed), isFalse);
+
+    await rec.dispose();
+    await engine.dispose();
+  });
+
+  test('20. mp4 中途暂停：HEAD 返回的 etag 已持久化到任务（含 JSON 往返）', () async {
+    final io = interruptibleMp4();
+    final store = MemoryTaskStore();
+    final engine = DownloadEngine(
+      store: store,
+      mp4Downloader: _mp4Dl(io.adapter),
+      hlsDownloader: _hlsDl(_idleAdapter()),
+      remuxer: _FakeRemuxer(),
+    );
+    final rec = _Recorder(engine);
+
+    engine.submit(_task('t20',
+        kind: SourceKind.mp4, url: 'https://cdn/a.mp4', dir: mkDir('t20')));
+    await rec.wait('t20', TaskStatus.running);
+    await rec.waitWhere((ev) => ev.taskId == 't20' && ev.downloadedBytes > 0);
+
+    engine.pause('t20');
+    await rec.wait('t20', TaskStatus.paused);
+
+    // HEAD 一返回 etag 就该持久化：中途暂停/被杀后仍能防内容变更。
+    final stored =
+        (await store.loadAll()).firstWhere((e) => e.taskId == 't20');
+    expect(stored.etag, '"v1"');
+    expect(DownloadTask.fromJson(stored.toJson()).etag, '"v1"',
+        reason: 'etag 必须进 JSON 持久化往返');
 
     await rec.dispose();
     await engine.dispose();

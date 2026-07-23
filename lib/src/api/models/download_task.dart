@@ -16,6 +16,9 @@ class DownloadTask {
   final int totalBytes;
   final int downloadedBytes;
   final String? mp4Path;
+
+  /// mp4 断点续传用的资源 ETag（HEAD 返回时即持久化，冷启动后仍可校验内容未变）。
+  final String? etag;
   final bool saveToAlbum;
   final bool albumSaved;
   final String? albumError;
@@ -35,6 +38,7 @@ class DownloadTask {
     this.totalBytes = 0,
     this.downloadedBytes = 0,
     this.mp4Path,
+    this.etag,
     this.saveToAlbum = true,
     this.albumSaved = false,
     this.albumError,
@@ -64,6 +68,7 @@ class DownloadTask {
     int? totalBytes,
     int? downloadedBytes,
     Object? mp4Path = _undefined,
+    Object? etag = _undefined,
     bool? saveToAlbum,
     bool? albumSaved,
     Object? albumError = _undefined,
@@ -82,6 +87,7 @@ class DownloadTask {
       totalBytes: totalBytes ?? this.totalBytes,
       downloadedBytes: downloadedBytes ?? this.downloadedBytes,
       mp4Path: identical(mp4Path, _undefined) ? this.mp4Path : mp4Path as String?,
+      etag: identical(etag, _undefined) ? this.etag : etag as String?,
       saveToAlbum: saveToAlbum ?? this.saveToAlbum,
       albumSaved: albumSaved ?? this.albumSaved,
       albumError:
@@ -103,6 +109,7 @@ class DownloadTask {
         'totalBytes': totalBytes,
         'downloadedBytes': downloadedBytes,
         'mp4Path': mp4Path,
+        'etag': etag,
         'saveToAlbum': saveToAlbum,
         'albumSaved': albumSaved,
         'albumError': albumError,
@@ -122,6 +129,7 @@ class DownloadTask {
         totalBytes: (json['totalBytes'] as int?) ?? 0,
         downloadedBytes: (json['downloadedBytes'] as int?) ?? 0,
         mp4Path: json['mp4Path'] as String?,
+        etag: json['etag'] as String?,
         saveToAlbum: (json['saveToAlbum'] as bool?) ?? true,
         albumSaved: (json['albumSaved'] as bool?) ?? false,
         albumError: json['albumError'] as String?,
@@ -145,6 +153,7 @@ class DownloadTask {
           totalBytes == other.totalBytes &&
           downloadedBytes == other.downloadedBytes &&
           mp4Path == other.mp4Path &&
+          etag == other.etag &&
           saveToAlbum == other.saveToAlbum &&
           albumSaved == other.albumSaved &&
           albumError == other.albumError &&
@@ -164,6 +173,7 @@ class DownloadTask {
         totalBytes,
         downloadedBytes,
         mp4Path,
+        etag,
         saveToAlbum,
         albumSaved,
         albumError,

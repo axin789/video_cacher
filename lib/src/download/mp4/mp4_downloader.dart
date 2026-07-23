@@ -47,6 +47,7 @@ class Mp4Downloader {
     required String destPath,
     String? partPath,
     String? knownEtag,
+    void Function(String? etag)? onEtag,
     void Function(int downloaded, int total) onProgress = _noop,
     CancelToken? cancelToken,
   }) async {
@@ -62,6 +63,7 @@ class Mp4Downloader {
           dest: File(destPath),
           part: part,
           knownEtag: knownEtag,
+          onEtag: onEtag,
           onProgress: onProgress,
           cancelToken: cancelToken,
         );
@@ -91,12 +93,15 @@ class Mp4Downloader {
     required File dest,
     required File part,
     required String? knownEtag,
+    required void Function(String? etag)? onEtag,
     required void Function(int downloaded, int total) onProgress,
     required CancelToken? cancelToken,
   }) async {
     final headInfo = await _http.head(url, cancelToken: cancelToken);
     final headEtag = headInfo.etag;
     final totalLen = headInfo.contentLength;
+    // HEAD 一返回就上报 etag，让引擎尽早持久化——中途 kill/暂停后仍能校验内容未变。
+    onEtag?.call(headEtag);
 
     // 计算续传偏移：`.part` 有字节 + 服务端支持 Range + ETag 未变 → 续传，否则从 0。
     var offset = 0;
@@ -105,29 +110,44 @@ class Mp4Downloader {
         knownEtag == null || headEtag == null || knownEtag == headEtag;
     if (existing > 0 && headInfo.acceptRanges && etagMatches) {
       offset = existing;
+    } else if (existing > 0 && !etagMatches) {
+      // 内容已变更：旧 `.part` 属于过期版本，删掉从 0 重下。
+      part.deleteSync();
     }
     VideoCacherLog.d(
         'mp4',
         '[$taskId] HEAD len=$totalLen etag=$headEtag '
         'ranges=${headInfo.acceptRanges} 续传偏移=$offset');
 
-    final Response<ResponseBody> resp;
-    try {
-      resp = await _http.getStream(
-        url,
-        rangeStart: offset > 0 ? offset : null,
-        etag: offset > 0 ? headEtag : null,
-        cancelToken: cancelToken,
-      );
-    } on HttpStatusException catch (e) {
-      // 416：`.part` 已 >= 文件大小，说明其实已下完，视为完成。
-      if (e.statusCode == 416 &&
-          offset > 0 &&
-          totalLen != null &&
-          offset >= totalLen) {
-        return _finish(part, dest, url, headEtag, totalLen, onProgress);
+    // If-Range 必须带「旧」etag 才有防内容变更的意义（带刚 HEAD 到的新 etag 是
+    // 恒真校验）；弱 etag（W/）按 RFC 7233 不可用于 If-Range，退化为裸 Range 续传。
+    final ifRange =
+        (knownEtag != null && !knownEtag.startsWith('W/')) ? knownEtag : null;
+
+    Response<ResponseBody>? resp;
+    // 416 异常态（总长未知/与 HEAD 不一致）只从 0 重试一次，防死循环。
+    var retriedAfter416 = false;
+    while (resp == null) {
+      try {
+        resp = await _http.getStream(
+          url,
+          rangeStart: offset > 0 ? offset : null,
+          etag: offset > 0 ? ifRange : null,
+          cancelToken: cancelToken,
+        );
+      } on HttpStatusException catch (e) {
+        if (e.statusCode != 416 || offset == 0) rethrow;
+        // 416 且 `.part` 已 >= 文件大小：说明其实已下完，视为完成。
+        if (totalLen != null && offset >= totalLen) {
+          return _finish(part, dest, url, headEtag, totalLen, onProgress);
+        }
+        // 总长未知（或 offset < totalLen 却仍 416）：`.part` 不可信，
+        // 删掉从 0 重试一次；否则每次 resume 都撞 416 永久失败。
+        if (retriedAfter416) rethrow;
+        retriedAfter416 = true;
+        if (part.existsSync()) part.deleteSync();
+        offset = 0;
       }
-      rethrow;
     }
 
     final status = resp.statusCode ?? 0;

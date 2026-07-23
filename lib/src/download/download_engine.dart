@@ -56,9 +56,6 @@ class DownloadEngine {
   /// 每个活跃/收尾中任务的最近一次显式意图。见 [_Intent]。
   final Map<String, _Intent> _pendingIntent = {};
 
-  /// MP4 续传用的 ETag：模型不落此字段，仅内存跟踪（冷启动后为空 → 从 0 或按 .part 续）。
-  final Map<String, String?> _etags = {};
-
   final StreamController<TaskEvent> _events =
       StreamController<TaskEvent>.broadcast();
 
@@ -172,7 +169,6 @@ class DownloadEngine {
     _pendingIntent[taskId] = _Intent.cancel;
     _interrupt(task);
     _tasks.remove(taskId);
-    _etags.remove(taskId);
     await _store.delete(taskId);
     VideoCacherLog.d('engine', 'task $taskId: ${task.status.name} -> 已删除');
     _emit(task.copyWith(status: TaskStatus.canceled));
@@ -265,11 +261,16 @@ class DownloadEngine {
       taskId: taskId,
       url: task.url,
       destPath: dest,
-      knownEtag: _etags[taskId],
+      knownEtag: task.etag,
+      // HEAD 一返回就持久化 etag：中途 kill/暂停后续传仍能校验内容未变。
+      onEtag: (etag) {
+        final cur = _tasks[taskId];
+        if (cur == null) return;
+        _commit(cur.copyWith(etag: etag));
+      },
       onProgress: (d, t) => _onProgress(taskId, d, t),
       cancelToken: token,
     );
-    _etags[taskId] = result.etag;
     final cur = _tasks[taskId];
     if (cur == null) return;
     // 下载返回后复查状态/意图：cancel/pause 恰落在完成提交前的窗口时尊重该终态，
@@ -283,6 +284,7 @@ class DownloadEngine {
       url: result.finalUrl,
       totalBytes: result.totalBytes,
       downloadedBytes: result.totalBytes,
+      etag: result.etag,
       error: null,
     ));
   }

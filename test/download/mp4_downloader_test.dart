@@ -100,6 +100,7 @@ void main() {
     File(part).writeAsBytesSync(full.sublist(0, k));
 
     String? rangeHdr;
+    String? ifRangeHdr;
     final adapter = _FakeAdapter((o) async {
       if (o.method == 'HEAD') {
         return _bytesBody(200, const [], headers: {
@@ -109,6 +110,7 @@ void main() {
         });
       }
       rangeHdr = _hdr(o, 'Range');
+      ifRangeHdr = _hdr(o, 'If-Range');
       return _bytesBody(206, full.sublist(k), headers: {
         'content-length': ['${100 - k}'],
         'content-range': ['bytes $k-99/100'],
@@ -124,6 +126,8 @@ void main() {
     );
 
     expect(rangeHdr, 'bytes=$k-');
+    // If-Range 带的是持久化的旧 etag，请求条件才有意义。
+    expect(ifRangeHdr, '"v1"');
     expect(File(dest).readAsBytesSync(), full);
     expect(r.totalBytes, 100);
   });
@@ -302,6 +306,105 @@ void main() {
     );
 
     expect(File(dest).existsSync(), isFalse);
+    expect(File(part).existsSync(), isFalse);
+  });
+
+  test('9. 弱 etag（W/）不作 If-Range：裸 Range 续传', () async {
+    final full = _range(0, 100);
+    const k = 40;
+    File(part).writeAsBytesSync(full.sublist(0, k));
+
+    String? rangeHdr;
+    String? ifRangeHdr;
+    final adapter = _FakeAdapter((o) async {
+      if (o.method == 'HEAD') {
+        return _bytesBody(200, const [], headers: {
+          'content-length': ['100'],
+          'etag': ['W/"v1"'],
+          'accept-ranges': ['bytes'],
+        });
+      }
+      rangeHdr = _hdr(o, 'Range');
+      ifRangeHdr = _hdr(o, 'If-Range');
+      return _bytesBody(206, full.sublist(k), headers: {
+        'content-length': ['${100 - k}'],
+        'content-range': ['bytes $k-99/100'],
+      });
+    });
+    final dl = _downloader(adapter);
+
+    final r = await dl.download(
+      taskId: 't9',
+      url: 'https://cdn/a.mp4',
+      destPath: dest,
+      knownEtag: 'W/"v1"',
+    );
+
+    expect(rangeHdr, 'bytes=$k-');
+    // RFC 7233：If-Range 只允许强校验器，弱 etag 不发。
+    expect(ifRangeHdr, isNull);
+    expect(File(dest).readAsBytesSync(), full);
+    expect(r.totalBytes, 100);
+  });
+
+  test('10. 无持久化 etag（knownEtag null）：续传不带 If-Range（新 etag 是恒真校验）',
+      () async {
+    final full = _range(0, 100);
+    const k = 40;
+    File(part).writeAsBytesSync(full.sublist(0, k));
+
+    String? ifRangeHdr;
+    final adapter = _FakeAdapter((o) async {
+      if (o.method == 'HEAD') {
+        return _bytesBody(200, const [], headers: {
+          'content-length': ['100'],
+          'etag': ['"v1"'],
+          'accept-ranges': ['bytes'],
+        });
+      }
+      ifRangeHdr = _hdr(o, 'If-Range');
+      return _bytesBody(206, full.sublist(k), headers: {
+        'content-length': ['${100 - k}'],
+        'content-range': ['bytes $k-99/100'],
+      });
+    });
+    final dl = _downloader(adapter);
+
+    await dl.download(taskId: 't10', url: 'https://cdn/a.mp4', destPath: dest);
+
+    expect(ifRangeHdr, isNull);
+    expect(File(dest).readAsBytesSync(), full);
+  });
+
+  test('11. 总长未知时 416：删 .part 从 0 重试一次并完成，不永久失败', () async {
+    final full = _range(0, 100);
+    File(part).writeAsBytesSync(List<int>.filled(120, 0xEE)); // 超长脏 .part
+
+    var gets = 0;
+    final adapter = _FakeAdapter((o) async {
+      if (o.method == 'HEAD') {
+        // 无 content-length：offset >= totalLen 的「视为完成」分支不可用。
+        return _bytesBody(200, const [], headers: {
+          'accept-ranges': ['bytes'],
+        });
+      }
+      gets++;
+      if (_hdr(o, 'Range') != null) return _bytesBody(416, const []);
+      return _bytesBody(200, full, headers: {
+        'content-length': ['100'],
+      });
+    });
+    final dl = _downloader(adapter);
+
+    final r = await dl.download(
+      taskId: 't11',
+      url: 'https://cdn/a.mp4',
+      destPath: dest,
+    );
+
+    expect(gets, 2, reason: 'Range GET 撞 416 后应从 0 全量重试一次');
+    expect(File(dest).readAsBytesSync(), full);
+    expect(r.totalBytes, 100);
     expect(File(part).existsSync(), isFalse);
   });
 }
