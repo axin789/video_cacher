@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -5,7 +6,9 @@ import 'package:dio/dio.dart';
 import 'package:video_cacher/src/api/models/download_config.dart';
 import 'package:video_cacher/src/download/http/http_client.dart';
 import 'package:video_cacher/src/download/http/url_refresher.dart';
+import 'package:video_cacher/src/download/hls/aes_decryptor.dart';
 import 'package:video_cacher/src/download/hls/hls_downloader.dart';
+import 'package:video_cacher/src/download/hls/m3u8_parser.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pointycastle/export.dart';
 
@@ -335,5 +338,150 @@ seg1.ts
 
     // 空 body 不能落成 0 字节文件。
     expect(File('${dir.path}/seg_1.ts').existsSync(), isFalse);
+  });
+
+  test('8. BOM playlist：不产生幽灵分片，隐式 IV 按正确 mediaSequence 解密', () async {
+    // KEY 不带 IV → 隐式 IV=mediaSequence。BOM 行若被当 URI 会多出幽灵分片，
+    // 把真实分片的序号整体 +1 → 解密错乱。
+    const playlist = '#EXTM3U\n'
+        '#EXT-X-TARGETDURATION:4\n'
+        '#EXT-X-MEDIA-SEQUENCE:7\n'
+        '#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n'
+        '#EXTINF:4.0,\nseg0.ts\n'
+        '#EXTINF:4.0,\nseg1.ts\n'
+        '#EXT-X-ENDLIST\n';
+    final bytes = [0xEF, 0xBB, 0xBF, ...utf8.encode(playlist)];
+    final adapter = _FakeAdapter((url) {
+      if (url.endsWith('/index.m3u8')) return _body(200, bytes);
+      if (url.endsWith('/key.bin')) return _body(200, key);
+      if (url.endsWith('/seg0.ts')) {
+        return _body(200, _encrypt(p0, key, AesDecryptor.ivFromSequence(7)));
+      }
+      if (url.endsWith('/seg1.ts')) {
+        return _body(200, _encrypt(p1, key, AesDecryptor.ivFromSequence(8)));
+      }
+      return _body(404, const []);
+    });
+    final dl = _downloader(adapter);
+
+    final r = await dl.download(
+      taskId: 't8',
+      entryUrl: 'https://cdn/hls/index.m3u8',
+      dir: dir.path,
+    );
+
+    expect(r.segmentFiles.length, 2);
+    expect(File('${dir.path}/seg_0.ts').readAsBytesSync(), p0);
+    expect(File('${dir.path}/seg_1.ts').readAsBytesSync(), p1);
+    expect(File('${dir.path}/seg_2.ts').existsSync(), isFalse);
+  });
+
+  test('9. 非 ASCII 分片名：解析出单次百分号编码的 URI，不双重编码', () async {
+    const playlist = '#EXTM3U\n'
+        '#EXT-X-TARGETDURATION:4\n'
+        '#EXTINF:4.0,\nsegó.ts\n'
+        '#EXT-X-ENDLIST\n';
+    final adapter = _FakeAdapter((url) {
+      if (url.endsWith('/index.m3u8')) return _body(200, utf8.encode(playlist));
+      // ó 的 UTF-8 是 C3 B3：正确的单次编码。双重编码（%C3%83%C2%B3）落到 404。
+      if (url == 'https://cdn/hls/seg%C3%B3.ts') return _body(200, p0);
+      return _body(404, const []);
+    });
+    final dl = _downloader(adapter);
+
+    final r = await dl.download(
+      taskId: 't9',
+      entryUrl: 'https://cdn/hls/index.m3u8',
+      dir: dir.path,
+    );
+
+    expect(r.segmentFiles.length, 1);
+    expect(adapter.requested, contains('https://cdn/hls/seg%C3%B3.ts'));
+    expect(File('${dir.path}/seg_0.ts').readAsBytesSync(), p0);
+  });
+
+  group('10. 不支持的 playlist 特性 fail-fast：抛明确错误且不发任何分片/key 请求', () {
+    Future<void> expectUnsupported(String playlist, String message) async {
+      final adapter = _FakeAdapter((url) {
+        if (url.endsWith('/index.m3u8')) {
+          return _body(200, utf8.encode(playlist));
+        }
+        if (url.endsWith('.bin')) return _body(200, key);
+        return _body(200, _encrypt(p0, key, iv));
+      });
+      final dl = _downloader(adapter);
+
+      await expectLater(
+        dl.download(
+          taskId: 'tu',
+          entryUrl: 'https://cdn/hls/index.m3u8',
+          dir: dir.path,
+        ),
+        throwsA(isA<UnsupportedPlaylistException>()
+            .having((e) => e.message, 'message', contains(message))),
+      );
+      // fail-fast：除入口 playlist 外没有任何请求（key/分片都不该发）。
+      expect(adapter.requested, ['https://cdn/hls/index.m3u8']);
+      expect(File('${dir.path}/seg_0.ts').existsSync(), isFalse);
+    }
+
+    test('key 轮换（多个不同 EXT-X-KEY）', () async {
+      await expectUnsupported(
+        '#EXTM3U\n'
+        '#EXT-X-TARGETDURATION:4\n'
+        '#EXT-X-KEY:METHOD=AES-128,URI="k1.bin",IV=0x$ivHex\n'
+        '#EXTINF:4.0,\nseg0.ts\n'
+        '#EXT-X-KEY:METHOD=AES-128,URI="k2.bin",IV=0x$ivHex\n'
+        '#EXTINF:4.0,\nseg1.ts\n'
+        '#EXT-X-ENDLIST\n',
+        'key 轮换',
+      );
+    });
+
+    test('METHOD=SAMPLE-AES', () async {
+      await expectUnsupported(
+        '#EXTM3U\n'
+        '#EXT-X-TARGETDURATION:4\n'
+        '#EXT-X-KEY:METHOD=SAMPLE-AES,URI="k.bin",IV=0x$ivHex\n'
+        '#EXTINF:4.0,\nseg0.ts\n'
+        '#EXT-X-ENDLIST\n',
+        'SAMPLE-AES',
+      );
+    });
+
+    test('EXT-X-MAP(fMP4)', () async {
+      await expectUnsupported(
+        '#EXTM3U\n'
+        '#EXT-X-TARGETDURATION:4\n'
+        '#EXT-X-MAP:URI="init.mp4"\n'
+        '#EXTINF:4.0,\nseg0.m4s\n'
+        '#EXT-X-ENDLIST\n',
+        'EXT-X-MAP',
+      );
+    });
+
+    test('EXT-X-BYTERANGE', () async {
+      await expectUnsupported(
+        '#EXTM3U\n'
+        '#EXT-X-TARGETDURATION:4\n'
+        '#EXTINF:4.0,\n'
+        '#EXT-X-BYTERANGE:1000@0\n'
+        'all.ts\n'
+        '#EXT-X-ENDLIST\n',
+        'EXT-X-BYTERANGE',
+      );
+    });
+
+    test('EXT-X-DISCONTINUITY', () async {
+      await expectUnsupported(
+        '#EXTM3U\n'
+        '#EXT-X-TARGETDURATION:4\n'
+        '#EXTINF:4.0,\nseg0.ts\n'
+        '#EXT-X-DISCONTINUITY\n'
+        '#EXTINF:4.0,\nad0.ts\n'
+        '#EXT-X-ENDLIST\n',
+        'EXT-X-DISCONTINUITY',
+      );
+    });
   });
 }

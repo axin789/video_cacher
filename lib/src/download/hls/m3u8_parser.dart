@@ -3,7 +3,19 @@
 // 只覆盖生产实际用到的标签：`#EXT-X-STREAM-INF`（master 选流）、
 // `#EXTINF` / `#EXT-X-KEY` / `#EXT-X-MEDIA-SEQUENCE` /
 // `#EXT-X-TARGETDURATION` / `#EXT-X-ENDLIST`（media）。
-// 未知标签一律忽略。不是完整 HLS 规范实现。
+// 不支持但会「记录」的特性（key 轮换 / 非 AES-128 加密 / EXT-X-MAP /
+// EXT-X-BYTERANGE / EXT-X-DISCONTINUITY）以标志位暴露，由下载器 fail-fast。
+// 其余未知标签一律忽略。不是完整 HLS 规范实现。
+
+/// playlist 使用了当前实现不支持的特性时由下载器抛出（下任何分片前 fail-fast）。
+class UnsupportedPlaylistException implements Exception {
+  final String message;
+
+  const UnsupportedPlaylistException(this.message);
+
+  @override
+  String toString() => 'UnsupportedPlaylistException: $message';
+}
 
 /// AES 加密信息（单 key 场景）。
 class HlsKey {
@@ -76,6 +88,21 @@ class M3u8Playlist {
   /// `EXT-X-TARGETDURATION` 换算的毫秒数；缺省为 0。
   final int targetDurationMs;
 
+  /// 是否出现多个不同值的 `EXT-X-KEY`（key 轮换）；当前不支持。
+  final bool hasKeyRotation;
+
+  /// 出现过的非 NONE/AES-128 加密 METHOD（如 SAMPLE-AES）；没有则为 null。
+  final String? unsupportedKeyMethod;
+
+  /// 是否含 `EXT-X-MAP`（fMP4 初始化段）；当前仅支持 TS 分片。
+  final bool hasMap;
+
+  /// 是否含 `EXT-X-BYTERANGE`（字节区间分片）；当前不支持。
+  final bool hasByteRange;
+
+  /// 是否含 `EXT-X-DISCONTINUITY`（编码不连续点）；当前不支持。
+  final bool hasDiscontinuity;
+
   const M3u8Playlist({
     required this.isMaster,
     required this.variants,
@@ -83,6 +110,11 @@ class M3u8Playlist {
     required this.key,
     required this.hasEndList,
     required this.targetDurationMs,
+    this.hasKeyRotation = false,
+    this.unsupportedKeyMethod,
+    this.hasMap = false,
+    this.hasByteRange = false,
+    this.hasDiscontinuity = false,
   });
 
   /// master 场景下带宽最高的一路；无变体时为 null。
@@ -105,6 +137,12 @@ class M3u8Parser {
     final variants = <HlsVariant>[];
     final segments = <HlsSegment>[];
     HlsKey? key;
+    String? firstKeyValue;
+    var hasKeyRotation = false;
+    String? unsupportedKeyMethod;
+    var hasMap = false;
+    var hasByteRange = false;
+    var hasDiscontinuity = false;
     var hasEndList = false;
     var targetDurationMs = 0;
     var mediaSequence = 0;
@@ -129,7 +167,22 @@ class M3u8Parser {
         } else if (line.startsWith('#EXTINF:')) {
           pendingDurationMs = _parseExtInf(line.substring(8));
         } else if (line.startsWith('#EXT-X-KEY:')) {
-          key = _parseKey(line.substring(11), base);
+          final value = line.substring(11);
+          // 多个不同值的 KEY = key 轮换：单 key 解密会把部分分片解错。
+          if (firstKeyValue != null && value != firstKeyValue) {
+            hasKeyRotation = true;
+          }
+          firstKeyValue ??= value;
+          key = _parseKey(value, base);
+          if (key.method != 'NONE' && key.method != 'AES-128') {
+            unsupportedKeyMethod = key.method;
+          }
+        } else if (line.startsWith('#EXT-X-MAP:')) {
+          hasMap = true;
+        } else if (line.startsWith('#EXT-X-BYTERANGE:')) {
+          hasByteRange = true;
+        } else if (line == '#EXT-X-DISCONTINUITY') {
+          hasDiscontinuity = true;
         } else if (line.startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
           mediaSequence =
               int.tryParse(line.substring(22).trim()) ?? 0;
@@ -174,6 +227,11 @@ class M3u8Parser {
       key: (key != null && key.isEncrypted) ? key : null,
       hasEndList: hasEndList,
       targetDurationMs: targetDurationMs,
+      hasKeyRotation: hasKeyRotation,
+      unsupportedKeyMethod: unsupportedKeyMethod,
+      hasMap: hasMap,
+      hasByteRange: hasByteRange,
+      hasDiscontinuity: hasDiscontinuity,
     );
   }
 

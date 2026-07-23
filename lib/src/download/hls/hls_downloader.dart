@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -73,6 +74,7 @@ class HlsDownloader {
     while (true) {
       try {
         final media = await _resolveMediaPlaylist(currentEntry, cancelToken);
+        _ensureSupported(media);
         final segments = media.segments;
         if (segments.isEmpty) {
           throw StateError('HLS media playlist 无分片: $currentEntry');
@@ -138,6 +140,33 @@ class HlsDownloader {
             '刷新入口（第 $refreshes/$_maxRefreshes 次）');
         currentEntry = await _refresher.refresh(taskId);
       }
+    }
+  }
+
+  /// 不支持的 playlist 特性在下任何分片（含 key）前 fail-fast：否则 key 轮换会
+  /// 解错分片、SAMPLE-AES 会落密文、fMP4/BYTERANGE/DISCONTINUITY 会产出
+  /// 重复/乱序或无法 remux 的数据，且污染断点续传缓存。
+  void _ensureSupported(M3u8Playlist media) {
+    if (media.unsupportedKeyMethod != null) {
+      throw UnsupportedPlaylistException(
+          'playlist 使用 EXT-X-KEY METHOD=${media.unsupportedKeyMethod}，'
+          '当前仅支持 NONE/AES-128');
+    }
+    if (media.hasKeyRotation) {
+      throw UnsupportedPlaylistException(
+          'playlist 使用多个不同的 EXT-X-KEY（key 轮换），当前仅支持单 key');
+    }
+    if (media.hasMap) {
+      throw UnsupportedPlaylistException(
+          'playlist 使用 EXT-X-MAP(fMP4)，当前仅支持 TS 分片');
+    }
+    if (media.hasByteRange) {
+      throw UnsupportedPlaylistException(
+          'playlist 使用 EXT-X-BYTERANGE，当前不支持字节区间分片');
+    }
+    if (media.hasDiscontinuity) {
+      throw UnsupportedPlaylistException(
+          'playlist 使用 EXT-X-DISCONTINUITY，当前不支持不连续流');
     }
   }
 
@@ -266,6 +295,10 @@ class HlsDownloader {
     }
   }
 
-  /// m3u8/key 均为文本或字节，解析器只吃 UTF-8 文本，这里做一次宽松解码。
-  String _decodeText(List<int> bytes) => String.fromCharCodes(bytes);
+  /// playlist 按 UTF-8 宽松解码并剥掉开头 BOM：逐字节转 char 会把 BOM 行当 URI
+  /// 产生幽灵分片（挤歪 mediaSequence/隐式 IV），非 ASCII 分片名也会被二次编码成 404。
+  String _decodeText(List<int> bytes) {
+    final text = utf8.decode(bytes, allowMalformed: true);
+    return text.startsWith('\uFEFF') ? text.substring(1) : text;
+  }
 }
