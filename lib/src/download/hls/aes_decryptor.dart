@@ -19,7 +19,16 @@ class AesDecryptor {
     List<int> ciphertext, {
     required List<int> key,
     required List<int> iv,
-  }) {
+  }) =>
+      decryptCbc(ciphertext, key, iv);
+
+  /// 静态核心：实例 API 与下载器的 isolate 闭包共用。cipher 在本函数内部
+  /// 构造——pointycastle 对象不跨 isolate，闭包只能捕获纯字节再进来现建。
+  static Uint8List decryptCbc(
+    List<int> ciphertext,
+    List<int> key,
+    List<int> iv,
+  ) {
     if (key.length != 16) {
       throw ArgumentError.value(key.length, 'key.length', 'AES-128 key 需 16 字节');
     }
@@ -35,15 +44,19 @@ class AesDecryptor {
       false, // decrypt
       PaddedBlockCipherParameters<CipherParameters, CipherParameters>(
         ParametersWithIV<KeyParameter>(
-          KeyParameter(Uint8List.fromList(key)),
-          Uint8List.fromList(iv),
+          KeyParameter(_asU8(key)),
+          _asU8(iv),
         ),
         null,
       ),
     );
 
-    return cipher.process(Uint8List.fromList(ciphertext));
+    return cipher.process(_asU8(ciphertext));
   }
+
+  /// 已是 Uint8List 就直接透传，不再多拷一份。
+  static Uint8List _asU8(List<int> l) =>
+      l is Uint8List ? l : Uint8List.fromList(l);
 
   /// 32 位十六进制字符串 → 16 字节 IV（`EXT-X-KEY` 显式给 IV 时用）。
   static Uint8List ivFromHex(String hex) {

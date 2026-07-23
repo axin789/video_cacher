@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -39,7 +40,6 @@ class HlsDownloader {
   final HttpClient _http;
   final UrlRefresher _refresher;
   final M3u8Parser _parser;
-  final AesDecryptor _aes;
   final int _segConcurrency;
 
   /// 单次 download 调用内最多追随几次 URL 刷新，超过则以底层错误放弃。
@@ -49,12 +49,10 @@ class HlsDownloader {
     required HttpClient http,
     required UrlRefresher refresher,
     M3u8Parser? parser,
-    AesDecryptor? aes,
     int segConcurrency = 2,
   })  : _http = http,
         _refresher = refresher,
         _parser = parser ?? M3u8Parser(),
-        _aes = aes ?? AesDecryptor(),
         _segConcurrency = segConcurrency < 1 ? 1 : segConcurrency;
 
   Future<HlsDownloadResult> download({
@@ -265,15 +263,15 @@ class HlsDownloader {
           if (bytes.isEmpty) {
             throw StateError('HLS 分片返回空 body: ${seg.uri}');
           }
-          final data = (keyBytes != null && key != null)
-              ? _aes.decrypt(
-                  bytes,
-                  key: keyBytes,
-                  iv: key.ivHex != null
-                      ? AesDecryptor.ivFromHex(key.ivHex!)
-                      : AesDecryptor.ivFromSequence(seg.mediaSequence),
-                )
-              : Uint8List.fromList(bytes);
+          final List<int> data;
+          if (keyBytes != null && key != null) {
+            final iv = key.ivHex != null
+                ? AesDecryptor.ivFromHex(key.ivHex!)
+                : AesDecryptor.ivFromSequence(seg.mediaSequence);
+            data = await _decryptInIsolate(bytes, keyBytes, iv);
+          } else {
+            data = bytes; // getBytes 返回的已是独立缓冲，无需再拷一份
+          }
           await _writeAtomic(_segPath(dir, seg.index), data);
           done++;
           onProgress(done, total);
@@ -300,6 +298,17 @@ class HlsDownloader {
     }
     if (expired != null) throw expired!;
   }
+
+  /// 整片解密 CPU 密集（实测 0.6-1.3s/片），放到 isolate 跑，cipher 在
+  /// 闭包内构造（pointycastle 对象不跨 isolate）。独立成静态方法是刻意的：
+  /// 闭包会连带捕获整个词法上下文，写在 worker 里会把不可发送的
+  /// CancelToken 一起拖进 isolate 消息导致运行时报错。
+  static Future<Uint8List> _decryptInIsolate(
+    List<int> bytes,
+    List<int> key,
+    Uint8List iv,
+  ) =>
+      Isolate.run(() => AesDecryptor.decryptCbc(bytes, key, iv));
 
   /// 原子写：先写 `.tmp` 并 flush，再 rename 到目标；rename 是同名同盘的原子操作。
   Future<void> _writeAtomic(String path, List<int> bytes) async {
