@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -29,7 +28,6 @@ class VideoCacher {
 
   bool _inited = false;
 
-  late Dio _dio;
   late HttpClient _http;
   late UrlRefresher _refresher;
   late JsonTaskStore _store;
@@ -59,8 +57,7 @@ class VideoCacher {
     _baseDir = await getApplicationDocumentsDirectory();
     _rootDir = p.join(_baseDir.path, 'video_cacher');
 
-    _dio = Dio();
-    _http = HttpClient(config, dio: _dio);
+    _http = HttpClient(config);
     _refresher = UrlRefresher(
       maxRetries: config.refreshMaxRetries,
       backoff: config.refreshBackoff,
@@ -171,9 +168,9 @@ class VideoCacher {
   Future<void> dispose() async {
     await _eventSub?.cancel();
     _eventSub = null;
-    _http.close();
-    _dio.close(force: true);
+    // 先停引擎（取消 token，任务落 paused/canceled），再关 HTTP 层，避免在途请求被判 failed。
     await _engine.dispose();
+    _http.close();
     _inited = false;
   }
 

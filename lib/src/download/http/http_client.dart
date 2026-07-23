@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:meta/meta.dart';
 
 import '../../api/models/download_config.dart';
 
@@ -74,6 +75,10 @@ class HttpClient {
   }
 
   DownloadConfig get config => _config;
+
+  /// 仅供测试：校验内部 Dio 确实按配置构建（超时/UA 等）。
+  @visibleForTesting
+  Dio get dioForTesting => _dio;
 
   /// HEAD：取 content-length / ETag / accept-ranges。
   Future<HeadInfo> head(String url,

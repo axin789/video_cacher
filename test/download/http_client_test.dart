@@ -206,6 +206,17 @@ void main() {
     });
   });
 
+  group('HttpClient 未注入 dio 时按配置自建', () {
+    test('connectTimeout/receiveTimeout/User-Agent 均来自 DownloadConfig', () {
+      const config = DownloadConfig();
+      final c = HttpClient(config);
+      final options = c.dioForTesting.options;
+      expect(options.connectTimeout, config.connectTimeout);
+      expect(options.receiveTimeout, config.receiveTimeout);
+      expect(options.headers['User-Agent'], config.userAgent);
+    });
+  });
+
   group('HttpClient CancelToken 取消立即传播', () {
     test('已取消的 CancelToken -> 抛取消异常，不重试', () async {
       final adapter = _RecordingAdapter(200, body: <int>[1]);
