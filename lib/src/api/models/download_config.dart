@@ -16,6 +16,9 @@ class DownloadConfig {
   /// URL 刷新退避间隔。
   final Duration refreshBackoff;
 
+  /// 单次刷新回调超时：回调挂起超过此时长按该次尝试失败处理。
+  final Duration refreshTimeout;
+
   const DownloadConfig({
     this.maxConcurrency = 3,
     this.segConcurrency = 2,
@@ -24,6 +27,7 @@ class DownloadConfig {
     this.userAgent = 'video_cacher/1.0',
     this.refreshMaxRetries = 3,
     this.refreshBackoff = const Duration(milliseconds: 500),
+    this.refreshTimeout = const Duration(seconds: 30),
   });
 
   DownloadConfig copyWith({
@@ -34,6 +38,7 @@ class DownloadConfig {
     String? userAgent,
     int? refreshMaxRetries,
     Duration? refreshBackoff,
+    Duration? refreshTimeout,
   }) {
     return DownloadConfig(
       maxConcurrency: maxConcurrency ?? this.maxConcurrency,
@@ -43,6 +48,7 @@ class DownloadConfig {
       userAgent: userAgent ?? this.userAgent,
       refreshMaxRetries: refreshMaxRetries ?? this.refreshMaxRetries,
       refreshBackoff: refreshBackoff ?? this.refreshBackoff,
+      refreshTimeout: refreshTimeout ?? this.refreshTimeout,
     );
   }
 }

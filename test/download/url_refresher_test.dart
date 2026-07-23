@@ -140,6 +140,44 @@ void main() {
     });
   });
 
+  group('UrlRefresher timeout', () {
+    test('回调挂起不返回 -> 每次尝试超时计失败，2 次后抛 UrlRefreshFailedException', () async {
+      var attempts = 0;
+      final refresher = UrlRefresher(
+        maxRetries: 1,
+        backoff: Duration.zero,
+        timeout: const Duration(milliseconds: 50),
+        callback: (id) {
+          attempts++;
+          return Completer<String>().future; // 永不完成
+        },
+      );
+
+      await expectLater(
+        refresher.refresh('t1'),
+        throwsA(isA<UrlRefreshFailedException>()),
+      );
+      expect(attempts, 2); // maxRetries(1) + 1
+    });
+
+    test('超时失败后在途条目已清：换好回调可再次刷新成功', () async {
+      final refresher = UrlRefresher(
+        maxRetries: 1,
+        backoff: Duration.zero,
+        timeout: const Duration(milliseconds: 50),
+        callback: (id) => Completer<String>().future,
+      );
+
+      await expectLater(
+        refresher.refresh('t1'),
+        throwsA(isA<UrlRefreshFailedException>()),
+      );
+
+      refresher.callback = (id) async => 'https://recovered/$id';
+      expect(await refresher.refresh('t1'), 'https://recovered/t1');
+    });
+  });
+
   group('UrlRefresher callback registration', () {
     test('未注入回调 -> 抛 NoRefreshCallbackException', () async {
       final refresher = UrlRefresher();

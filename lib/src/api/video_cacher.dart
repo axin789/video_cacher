@@ -67,6 +67,7 @@ class VideoCacher {
     _refresher = UrlRefresher(
       maxRetries: config.refreshMaxRetries,
       backoff: config.refreshBackoff,
+      timeout: config.refreshTimeout,
     );
     if (_refreshPending) {
       _refresher.callback = _pendingRefresh;

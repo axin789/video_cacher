@@ -33,6 +33,9 @@ class UrlRefresher {
   final int maxRetries;
   final Duration backoff;
 
+  /// 单次回调超时：业务回调挂起不返回时按该次尝试失败处理，防止占死并发槽。
+  final Duration timeout;
+
   /// 每个 taskId 正在进行中的刷新 Future，完成（成功或失败）后立即清除。
   final Map<String, Future<String>> _inFlight = <String, Future<String>>{};
 
@@ -40,6 +43,7 @@ class UrlRefresher {
     RefreshUrlCallback? callback,
     this.maxRetries = 3,
     this.backoff = const Duration(milliseconds: 500),
+    this.timeout = const Duration(seconds: 30),
   }) : _callback = callback;
 
   /// 由 VideoCacher 在 setRefreshUrl 时注入/替换。
@@ -81,7 +85,7 @@ class UrlRefresher {
     for (var attempt = 0; attempt < totalAttempts; attempt++) {
       if (attempt > 0) await Future<void>.delayed(backoff);
       try {
-        final url = (await cb(taskId)).trim();
+        final url = (await cb(taskId).timeout(timeout)).trim();
         if (url.isEmpty) {
           lastError = StateError('refresh callback returned empty url');
           VideoCacherLog.d('refresh',
