@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'aac_adts.dart';
@@ -12,9 +13,9 @@ class VideoSample {
   const VideoSample(this.data, this.pts, this.dts, this.keyframe);
 }
 
-/// mp4 构建产物 + 供日志/校验用的关键统计。
+/// mp4 构建产物统计（文件本体已流式写入 [buildMp4] 的 outPath）。
 class Mp4BuildResult {
-  final Uint8List bytes;
+  final int fileSize; // 落盘总字节数
   final int mdatSize;
   final int moovSize;
   final int videoTimescale;
@@ -26,7 +27,7 @@ class Mp4BuildResult {
   final List<int> firstCtts;
 
   const Mp4BuildResult({
-    required this.bytes,
+    required this.fileSize,
     required this.mdatSize,
     required this.moovSize,
     required this.videoTimescale,
@@ -62,7 +63,8 @@ Uint8List _fullbox(String type, int version, int flags, List<int> payload) {
   return _box(type, b.toBytes());
 }
 
-/// 用已解析好的 video 样本 + audio 帧，构建一个 fragmented-free 的 mp4。
+/// 用已解析好的 video 样本 + audio 帧，构建一个 fragmented-free 的 mp4，
+/// 流式写入 [outPath]（ftyp → mdat → moov，边写边释放，不整装内存）。
 ///
 /// 时间基线与 edit list 复刻已验证原型（framemd5 与 `ffmpeg -c copy` 逐帧一致）：
 /// A/V 两轨统一以「全局最小 PTS」为基线，视频用空编辑 + media 编辑
@@ -71,8 +73,7 @@ Uint8List _fullbox(String type, int version, int flags, List<int> payload) {
 /// 当前 VOD 场景的硬限制（未处理，业务需知）：
 ///  - PTS 33-bit 环绕已在 TsDemuxer 展开为单调 64 位，这里默认输入已单调。
 ///  - 单个 mdat 用 32 位 size + stco 用 32 位偏移：>4GB 产物会溢出（未写 co64）。
-///  - 整流入内存（mdat/样本表全量驻留）：超长/超大片会 OOM。
-Mp4BuildResult buildMp4({
+Future<Mp4BuildResult> buildMp4({
   required List<VideoSample> vsamples,
   required Uint8List sps,
   required Uint8List pps,
@@ -80,25 +81,17 @@ Mp4BuildResult buildMp4({
   required int height,
   required AacInfo aac,
   required int firstAudioPts,
-}) {
+  required String outPath,
+}) async {
   // decode order = DTS 升序（TS 通常已如此，排序兜底）
   final vs = List<VideoSample>.from(vsamples)
     ..sort((a, b) => a.dts.compareTo(b.dts));
 
-  // ---- mdat：先 video chunk 再 audio chunk ----
-  final mdatBody = BytesBuilder(copy: false);
-  final vSizes = <int>[];
-  for (final s in vs) {
-    mdatBody.add(s.data);
-    vSizes.add(s.data.length);
-  }
+  // ---- mdat 尺寸：先 video chunk 再 audio chunk（样本字节到写入时才落盘）----
+  final vSizes = <int>[for (final s in vs) s.data.length];
   final vChunkSize = vSizes.fold<int>(0, (a, b) => a + b);
-  final aSizes = <int>[];
-  for (final f in aac.frames) {
-    mdatBody.add(f);
-    aSizes.add(f.length);
-  }
-  final mdat = mdatBody.toBytes();
+  final aSizes = <int>[for (final f in aac.frames) f.length];
+  final mdatSize = vChunkSize + aSizes.fold<int>(0, (a, b) => a + b);
 
   // ---- video timing ----
   // 呈现基线只能用 PTS，绝不能混入 DTS：含 B 帧时 DTS<PTS，若用视频首个 DTS
@@ -456,19 +449,46 @@ Mp4BuildResult buildMp4({
 
   final moov = _box('moov', [...mvhd(), ...vTrak, ...aTrak]);
 
-  // ---- 组装文件 ----
-  final out = BytesBuilder(copy: false);
-  out.add(ftyp);
-  final mdatHdr = BytesBuilder(copy: false);
-  _wU32(mdatHdr, 8 + mdat.length);
-  mdatHdr.add('mdat'.codeUnits);
-  out.add(mdatHdr.toBytes());
-  out.add(mdat);
-  out.add(moov);
+  // ---- 流式落盘：ftyp + mdat 头，逐样本写 mdat 体，最后 moov ----
+  // 复用一个 1MB 缓冲攒批（兼顾 syscall 数与零垃圾），满了才真正写盘。
+  final raf = await File(outPath).open(mode: FileMode.write);
+  try {
+    final wbuf = Uint8List(1 << 20);
+    var wlen = 0;
+    Future<void> put(List<int> data) async {
+      var off = 0;
+      while (off < data.length) {
+        final take = data.length - off < wbuf.length - wlen
+            ? data.length - off
+            : wbuf.length - wlen;
+        wbuf.setRange(wlen, wlen + take, data, off);
+        wlen += take;
+        off += take;
+        if (wlen == wbuf.length) {
+          await raf.writeFrom(wbuf, 0, wlen);
+          wlen = 0;
+        }
+      }
+    }
+
+    await put(ftyp);
+    await put(_u32(8 + mdatSize));
+    await put('mdat'.codeUnits);
+    for (final s in vs) {
+      await put(s.data);
+    }
+    for (final f in aac.frames) {
+      await put(f);
+    }
+    await put(moov);
+    if (wlen > 0) await raf.writeFrom(wbuf, 0, wlen);
+  } finally {
+    await raf.close();
+  }
 
   return Mp4BuildResult(
-    bytes: out.toBytes(),
-    mdatSize: mdat.length,
+    fileSize: ftyp.length + 8 + mdatSize + moov.length,
+    mdatSize: mdatSize,
     moovSize: moov.length,
     videoTimescale: videoTimescale,
     firstPts: vs.first.pts,

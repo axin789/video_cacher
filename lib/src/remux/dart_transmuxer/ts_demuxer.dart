@@ -62,7 +62,8 @@ class ElementaryStream {
       if (u.dts != null) u.dts = _unwrap(u.dts!);
       if (u.pts == null && TsStreamType.isVideo(streamType) && units.isNotEmpty) {
         // 有界长度 PES 会把一个 AU 拆成多包，续包不带 PTS：并回上一单元
-        units.last.data.add(u.data.toBytes());
+        // （takeBytes 单块直接挪引用，不再多复制一份）
+        units.last.data.add(u.data.takeBytes());
       } else {
         units.add(u);
       }
@@ -96,10 +97,10 @@ void _parsePes(PesUnit u) {
 }
 
 void _rewriteData(PesUnit u, Uint8List b, int start) {
-  final bb = BytesBuilder(copy: false);
-  if (start < b.length) bb.add(Uint8List.sublistView(b, start));
+  // b 是 _parsePes 里 toBytes 出的独立拷贝（已脱离 TS 分片大缓冲），这里保留
+  // 其 payload 视图即可，不再二次复制：PES 头那十几个字节的驻留可忽略。
   u.data.clear();
-  u.data.add(bb.toBytes());
+  if (start < b.length) u.data.add(Uint8List.sublistView(b, start));
 }
 
 int _readTs(Uint8List b, int o) {

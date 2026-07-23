@@ -61,6 +61,10 @@ class DartTransmuxer implements Remuxer {
     }
   }
 
+  /// 分片读取块大小：小于新生代大对象阈值，读缓冲与 PES 中转拷贝都能被
+  /// 廉价的 scavenge 回收，不在老生代堆积（大块读会把整段钉进老生代）。
+  static const int _feedChunkSize = 16 * 1024;
+
   Future<RemuxResult> _run(
     String taskId,
     List<String> segmentFiles,
@@ -68,20 +72,89 @@ class DartTransmuxer implements Remuxer {
     void Function(int bytes)? onProgress,
     Stopwatch sw,
   ) async {
-    // ---- demux：逐分片喂入 ----
+    // ---- demux + video 转换：边喂边转 ----
+    // 视频单元一完成（不会再收续包）就立刻转成 AVCC 并释放 PES 缓冲：
+    // 全程只驻留一份视频数据（AVCC），而不是 PES + AVCC 两份。
     final demux = TsDemuxer();
     int totalBytes = 0;
-    for (final path in segmentFiles) {
-      if (_canceled.contains(taskId)) {
-        return const RemuxResult(ok: false, error: 'canceled');
+    Uint8List? sps, pps;
+    final vsamples = <VideoSample>[];
+    int iCount = 0, pCount = 0, bCount = 0;
+
+    void convertVideoUnit(PesUnit u) {
+      final raw = u.data.takeBytes(); // 单块零拷贝取出并清空原缓冲
+      if (u.pts == null) return;
+      final nals = splitNals(raw);
+      if (nals.isEmpty) return;
+      bool key = false;
+      // 精确分配 AVCC 缓冲一次填充（4 字节长度前缀 + NAL 体），零中间垃圾
+      var total = 0;
+      for (final nal in nals) {
+        if (nal.isNotEmpty) total += 4 + nal.length;
       }
-      final bytes = await File(path).readAsBytes();
-      totalBytes += bytes.length;
-      demux.feed(bytes);
-      // PMT 一见即校验视频编码：h265 等大任务不必读完全部分片才报错
-      _failFastOnPmt(demux);
+      final data = Uint8List(total);
+      var w = 0;
+      for (final nal in nals) {
+        if (nal.isEmpty) continue;
+        final type = nal[0] & 0x1f;
+        if (type == NalType.sps) {
+          sps ??= Uint8List.fromList(nal);
+        } else if (type == NalType.pps) {
+          pps ??= Uint8List.fromList(nal);
+        }
+        if (type == NalType.idr) key = true;
+        data[w++] = (nal.length >> 24) & 0xff;
+        data[w++] = (nal.length >> 16) & 0xff;
+        data[w++] = (nal.length >> 8) & 0xff;
+        data[w++] = nal.length & 0xff;
+        data.setRange(w, w + nal.length, nal);
+        w += nal.length;
+      }
+      vsamples.add(VideoSample(data, u.pts!, u.dts!, key));
+      // I/P/B 统计：pts>dts 记为 B（含重排），关键帧记为 I，其余 P
+      if (key) {
+        iCount++;
+      } else if (u.pts! > u.dts!) {
+        bCount++;
+      } else {
+        pCount++;
+      }
+    }
+
+    // 只转换「已封口」的单元：最后一个可能还会被有界 PES 的续包并回，
+    // 留到出现更新单元或 finish 后再转。
+    void drainVideo({required bool all}) {
+      final units = demux.video?.units;
+      if (units == null || units.isEmpty) return;
+      final end = all ? units.length : units.length - 1;
+      if (end <= 0) return;
+      for (var i = 0; i < end; i++) {
+        convertVideoUnit(units[i]);
+      }
+      units.removeRange(0, end);
+    }
+
+    for (final path in segmentFiles) {
+      final raf = await File(path).open();
+      try {
+        while (true) {
+          if (_canceled.contains(taskId)) {
+            return const RemuxResult(ok: false, error: 'canceled');
+          }
+          final chunk = await raf.read(_feedChunkSize);
+          if (chunk.isEmpty) break;
+          totalBytes += chunk.length;
+          demux.feed(chunk);
+          // PMT 一见即校验视频编码：h265 等大任务不必读完全部分片才报错
+          _failFastOnPmt(demux);
+          drainVideo(all: false);
+        }
+      } finally {
+        await raf.close();
+      }
     }
     demux.finish();
+    drainVideo(all: true);
 
     _log('input: ${segmentFiles.length} segments, $totalBytes bytes');
 
@@ -113,69 +186,19 @@ class DartTransmuxer implements Remuxer {
       );
     }
 
-    // ---- video：一个 PES = 一个 AU ----
-    Uint8List? sps, pps;
-    final vsamples = <VideoSample>[];
-    int iCount = 0, pCount = 0, bCount = 0;
-    for (final u in video.units) {
-      if (_canceled.contains(taskId)) {
-        return const RemuxResult(ok: false, error: 'canceled');
-      }
-      if (u.pts == null) continue;
-      final nals = splitNals(u.data.toBytes());
-      if (nals.isEmpty) continue;
-      bool key = false;
-      final out = BytesBuilder(copy: false);
-      for (final nal in nals) {
-        if (nal.isEmpty) continue;
-        final type = nal[0] & 0x1f;
-        if (type == NalType.sps) {
-          sps ??= Uint8List.fromList(nal);
-        } else if (type == NalType.pps) {
-          pps ??= Uint8List.fromList(nal);
-        }
-        if (type == NalType.idr) key = true;
-        out.add([
-          (nal.length >> 24) & 0xff,
-          (nal.length >> 16) & 0xff,
-          (nal.length >> 8) & 0xff,
-          nal.length & 0xff,
-        ]);
-        out.add(nal);
-      }
-      final sample = VideoSample(out.toBytes(), u.pts!, u.dts!, key);
-      vsamples.add(sample);
-      // I/P/B 统计：pts>dts 记为 B（含重排），关键帧记为 I，其余 P
-      if (key) {
-        iCount++;
-      } else if (u.pts! > u.dts!) {
-        bCount++;
-      } else {
-        pCount++;
-      }
-    }
-
-    if (sps == null || pps == null) {
+    // sps/pps 被闭包捕获不参与类型提升，判空后固定成局部非空引用
+    final vSps = sps;
+    final vPps = pps;
+    if (vSps == null || vPps == null) {
       throw const UnsupportedStreamException('missing SPS/PPS');
     }
     if (vsamples.isEmpty) {
       throw const UnsupportedStreamException('no video frames');
     }
-    _log('video: sps=${sps.isNotEmpty} pps=${pps.isNotEmpty} '
+    _log('video: sps=${vSps.isNotEmpty} pps=${vPps.isNotEmpty} '
         'frames=${vsamples.length} I=$iCount P=$pCount B=$bCount');
 
-    // ---- audio：ADTS 帧 ----
-    final aac = parseAdts(audio.units.map((u) => u.data.toBytes()));
-    if (aac == null) {
-      throw const UnsupportedStreamException('no decodable AAC frames');
-    }
-    _log('audio: frames=${aac.frames.length} rate=${aac.sampleRate} '
-        'ch=${aac.channels} aot=${aac.objectType}');
-
-    final dims = parseSpsDimensions(sps);
-    _log('dimensions: ${dims.width}x${dims.height}');
-
-    // 音频首个 PTS（供全局基线）
+    // 音频首个 PTS（供全局基线）：必须在清空 audio.units 前提取
     int firstAudioPts = vsamples.first.dts;
     for (final u in audio.units) {
       if (u.pts != null) {
@@ -184,18 +207,33 @@ class DartTransmuxer implements Remuxer {
       }
     }
 
+    // ---- audio：ADTS 帧（逐单元取出即释放原缓冲）----
+    final aac = parseAdts(_drainUnits(audio.units));
+    audio.units.clear();
+    if (aac == null) {
+      throw const UnsupportedStreamException('no decodable AAC frames');
+    }
+    _log('audio: frames=${aac.frames.length} rate=${aac.sampleRate} '
+        'ch=${aac.channels} aot=${aac.objectType}');
+
+    final dims = parseSpsDimensions(vSps);
+    _log('dimensions: ${dims.width}x${dims.height}');
+
     if (_canceled.contains(taskId)) {
       return const RemuxResult(ok: false, error: 'canceled');
     }
 
-    final built = buildMp4(
+    // 原子写：先流式写 .part 再 rename，进程被杀不会在最终路径留下半截 mp4。
+    final partPath = '$outMp4.part';
+    final built = await buildMp4(
       vsamples: vsamples,
-      sps: sps,
-      pps: pps,
+      sps: vSps,
+      pps: vPps,
       width: dims.width,
       height: dims.height,
       aac: aac,
       firstAudioPts: firstAudioPts,
+      outPath: partPath,
     );
 
     _log('timing: firstPts=${built.firstPts} firstDts=${built.firstDts} '
@@ -204,15 +242,19 @@ class DartTransmuxer implements Remuxer {
         'ctts[0..]=${built.firstCtts}');
     _log('boxes: mdat=${built.mdatSize} moov=${built.moovSize}');
 
-    // 原子写：先写 .part 再 rename，进程被杀不会在最终路径留下半截 mp4。
-    final partPath = '$outMp4.part';
-    await File(partPath).writeAsBytes(built.bytes);
     await File(partPath).rename(outMp4);
-    onProgress?.call(built.bytes.length);
+    onProgress?.call(built.fileSize);
 
     sw.stop();
-    _log('done: wrote ${built.bytes.length} bytes in ${sw.elapsedMilliseconds}ms');
+    _log('done: wrote ${built.fileSize} bytes in ${sw.elapsedMilliseconds}ms');
     return RemuxResult(ok: true, outMp4: outMp4);
+  }
+
+  /// 逐个取出 PES 单元的字节并清掉其内部缓冲，供解析方边消费边释放。
+  static Iterable<Uint8List> _drainUnits(List<PesUnit> units) sync* {
+    for (final u in units) {
+      yield u.data.takeBytes();
+    }
   }
 
   /// PMT 已见但视频不是 h264 时立即失败，错误里列出 PMT 全部 stream_type。

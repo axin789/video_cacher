@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:video_cacher/src/remux/dart_transmuxer/aac_adts.dart';
@@ -103,18 +104,36 @@ void main() {
     2, // stereo
   );
 
-  late Uint8List out;
-  setUp(() {
-    final r = buildMp4(
-      vsamples: samples,
+  late Directory tmp;
+  int buildSeq = 0;
+
+  /// buildMp4 已改为流式写文件：落到临时文件再读回字节供结构断言。
+  Future<(Mp4BuildResult, Uint8List)> build({
+    List<VideoSample>? vsamples,
+    AacInfo? aacInfo,
+  }) async {
+    final path = '${tmp.path}/out_${buildSeq++}.mp4';
+    final r = await buildMp4(
+      vsamples: vsamples ?? samples,
       sps: sps,
       pps: pps,
       width: 320,
       height: 240,
-      aac: aac,
+      aac: aacInfo ?? aac,
       firstAudioPts: 0,
+      outPath: path,
     );
-    out = r.bytes;
+    return (r, File(path).readAsBytesSync());
+  }
+
+  late Uint8List out;
+  setUp(() async {
+    tmp = Directory.systemTemp.createTempSync('mp4b_');
+    out = (await build()).$2;
+  });
+
+  tearDown(() {
+    if (tmp.existsSync()) tmp.deleteSync(recursive: true);
   });
 
   group('buildMp4 结构', () {
@@ -154,16 +173,8 @@ void main() {
       expect(count, samples.length);
     });
 
-    test('ctts 存在时 elst media_time = 最小 composition offset', () {
-      final r = buildMp4(
-        vsamples: samples,
-        sps: sps,
-        pps: pps,
-        width: 320,
-        height: 240,
-        aac: aac,
-        firstAudioPts: 0,
-      );
+    test('ctts 存在时 elst media_time = 最小 composition offset', () async {
+      final (r, _) = await build();
       // 样本含 pts<dts（最小 offset=-1000）：DTS 整体平移后 ctts 全部非负，
       // mediaStart = minPts - vDts[0] = 0 - (-1000) = 1000；空编辑仍 = minPts = 0
       expect(r.mediaStart, 1000);
@@ -174,97 +185,65 @@ void main() {
       expect(r.firstCtts.any((c) => c != 0), isTrue);
     });
 
-    test('pts<dts 时 ctts 不下溢（u32 全部 < 2^31）', () {
+    test('pts<dts 时 ctts 不下溢（u32 全部 < 2^31）', () async {
       final bad = <VideoSample>[
         VideoSample(Uint8List(10), 0, 0, true),
         VideoSample(Uint8List(10), 2900, 3000, false), // pts < dts
         VideoSample(Uint8List(10), 6000, 6000, false),
       ];
-      final r = buildMp4(
-        vsamples: bad,
-        sps: sps,
-        pps: pps,
-        width: 320,
-        height: 240,
-        aac: aac,
-        firstAudioPts: 0,
-      );
-      final o = _findBox(r.bytes, 0, r.bytes.length, 'ctts')!;
-      final n = _u32(r.bytes, o + 4);
+      final (_, bytes) = await build(vsamples: bad);
+      final o = _findBox(bytes, 0, bytes.length, 'ctts')!;
+      final n = _u32(bytes, o + 4);
       expect(n, greaterThan(0));
       for (int i = 0; i < n; i++) {
-        final off = _u32(r.bytes, o + 8 + i * 8 + 4);
+        final off = _u32(bytes, o + 8 + i * 8 + 4);
         expect(off, lessThan(0x80000000), reason: 'ctts[$i]=$off 下溢');
       }
     });
 
-    test('无关键帧时省略 stss（缺省 = 全部 sync）', () {
+    test('无关键帧时省略 stss（缺省 = 全部 sync）', () async {
       final noKey = <VideoSample>[
         VideoSample(Uint8List(10), 0, 0, false),
         VideoSample(Uint8List(10), 3000, 3000, false),
       ];
-      final r = buildMp4(
-        vsamples: noKey,
-        sps: sps,
-        pps: pps,
-        width: 320,
-        height: 240,
-        aac: aac,
-        firstAudioPts: 0,
-      );
+      final (_, bytes) = await build(vsamples: noKey);
       final types = <String>[];
-      _collectTypes(r.bytes, 0, r.bytes.length, types);
+      _collectTypes(bytes, 0, bytes.length, types);
       expect(types, isNot(contains('stss')));
     });
 
-    test('audio tkhd duration 用 movie timescale 而非采样数', () {
+    test('audio tkhd duration 用 movie timescale 而非采样数', () async {
       // 100 帧 AAC@44100 = 102400 采样 -> movie(90000) = 208979
       final aac100 = AacInfo(List.generate(100, (_) => Uint8List(8)), 2, 4, 2);
-      final r = buildMp4(
-        vsamples: samples,
-        sps: sps,
-        pps: pps,
-        width: 320,
-        height: 240,
-        aac: aac100,
-        firstAudioPts: 0,
-      );
-      final tkhds = _findBoxAll(r.bytes, 'tkhd');
+      final (_, bytes) = await build(aacInfo: aac100);
+      final tkhds = _findBoxAll(bytes, 'tkhd');
       expect(tkhds.length, 2);
       // fullbox v0: verflags(4) creation(4) mod(4) trackid(4) reserved(4) dur(4)
-      final audioTkhdDur = _u32(r.bytes, tkhds[1] + 4 + 16);
+      final audioTkhdDur = _u32(bytes, tkhds[1] + 4 + 16);
       expect(audioTkhdDur, (100 * 1024 * 90000) ~/ 44100);
-      final mvhdOff = _findBox(r.bytes, 0, r.bytes.length, 'mvhd')!;
-      final mvhdDur = _u32(r.bytes, mvhdOff + 4 + 12);
+      final mvhdOff = _findBox(bytes, 0, bytes.length, 'mvhd')!;
+      final mvhdDur = _u32(bytes, mvhdOff + 4 + 12);
       expect(mvhdDur, greaterThanOrEqualTo(audioTkhdDur));
     });
 
-    test('sampleRate >= 65536 时 mp4a 采样率字段写 0（esds 为准）', () {
+    test('sampleRate >= 65536 时 mp4a 采样率字段写 0（esds 为准）', () async {
       final aac96k = AacInfo([Uint8List(8)], 2, 0, 2); // freqIndex 0 = 96000
-      final r = buildMp4(
-        vsamples: samples,
-        sps: sps,
-        pps: pps,
-        width: 320,
-        height: 240,
-        aac: aac96k,
-        firstAudioPts: 0,
-      );
+      final (_, bytes) = await build(aacInfo: aac96k);
       // mp4a payload 前 24 字节后是 16.16 采样率的高 16 位
-      final i = _fourCCIndex(r.bytes, 'mp4a')!;
-      final rateHi = (r.bytes[i + 28] << 8) | r.bytes[i + 29];
+      final i = _fourCCIndex(bytes, 'mp4a')!;
+      final rateHi = (bytes[i + 28] << 8) | bytes[i + 29];
       expect(rateHi, 0);
     });
   });
 
   group('buildMp4 时间基线', () {
-    test('音频先起时用全局基线并产生非零空编辑', () {
+    test('音频先起时用全局基线并产生非零空编辑', () async {
       // audio 首 PTS 早于 video 首 DTS（video dts0=0，这里 audio=-900 不合法，
       // 用 video dts 抬高来模拟：让 video 全部 +900，audio 基线 0）。
       final shifted = samples
           .map((s) => VideoSample(s.data, s.pts + 900, s.dts + 900, s.keyframe))
           .toList();
-      final r = buildMp4(
+      final r = await buildMp4(
         vsamples: shifted,
         sps: sps,
         pps: pps,
@@ -272,12 +251,13 @@ void main() {
         height: 240,
         aac: aac,
         firstAudioPts: 0, // audio 更早
+        outPath: '${tmp.path}/baseline_a.mp4',
       );
       // globalMin=0 -> video 首 dts 相对基线=900；minPts=900 -> 空编辑=900
       expect(r.emptyEditDur, 900);
     });
 
-    test('视频 DTS 早于音频 PTS 时，空编辑用 PTS 而非被 DTS 污染', () {
+    test('视频 DTS 早于音频 PTS 时，空编辑用 PTS 而非被 DTS 污染', () async {
       // 真实点播样本形态：含 B 帧，视频首个 DTS(126000) < 音频首 PTS(129910)，
       // 视频最小 PTS = 132000（reorder 延迟 6000）。
       final real = <VideoSample>[
@@ -285,7 +265,7 @@ void main() {
         VideoSample(Uint8List(80), 138000, 129000, false), // P
         VideoSample(Uint8List(60), 135000, 132000, false), // B
       ];
-      final r = buildMp4(
+      final r = await buildMp4(
         vsamples: real,
         sps: sps,
         pps: pps,
@@ -293,6 +273,7 @@ void main() {
         height: 240,
         aac: aac,
         firstAudioPts: 129910,
+        outPath: '${tmp.path}/baseline_b.mp4',
       );
       // 正确：globalMin=min(129910,132000)=129910 -> dEmpty=132000-129910=2090
       expect(r.emptyEditDur, 132000 - 129910); // 2090
