@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:meta/meta.dart';
 import 'package:path/path.dart' as p;
 
 import '../api/models/download_config.dart';
@@ -69,6 +70,11 @@ class DownloadEngine {
 
   /// 内存任务表只读快照。
   Map<String, DownloadTask> get tasks => Map.unmodifiable(_tasks);
+
+  /// 测试探针：待定意图表当前条目数。活跃 worker 运行期间自带一条 none 占位，
+  /// 全部收尾后应归零，用于断言无意图残留。
+  @visibleForTesting
+  int get pendingIntentCount => _pendingIntent.length;
 
   /// 对外事件流（广播）。
   Stream<TaskEvent> get events => _events.stream;
@@ -159,7 +165,9 @@ class DownloadEngine {
       _tokens[id]?.cancel();
       if (task.status == TaskStatus.remuxing) _remuxer.cancel(id);
     } else {
+      // 非活跃任务没有 worker 的 finally 兜底清理，意图就地清掉，避免永久残留。
       _queue.remove(id);
+      _pendingIntent.remove(id);
     }
   }
 
@@ -172,8 +180,10 @@ class DownloadEngine {
     if (_disposed) return;
     final task = _tasks[taskId];
     if (task == null) return;
-    _pendingIntent[taskId] = _Intent.cancel;
     _interrupt(task);
+    // 任务即将移出内存表，活跃 worker 的收尾读不到任务、不会做任何提交，
+    // 意图已无意义，直接清掉避免残留。
+    _pendingIntent.remove(taskId);
     _tasks.remove(taskId);
     await _store.delete(taskId);
     VideoCacherLog.d('engine', 'task $taskId: ${task.status.name} -> 已删除');

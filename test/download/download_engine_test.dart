@@ -1235,4 +1235,51 @@ void main() {
     await rec.dispose();
     await engine.dispose();
   });
+
+  test('24. pause 排队中任务：意图不残留，resume 后正常跑到 completed', () async {
+    final gates = {
+      'a.mp4': Completer<void>(),
+      'b.mp4': Completer<void>(),
+    };
+    final store = MemoryTaskStore();
+    final engine = DownloadEngine(
+      store: store,
+      mp4Downloader: _mp4Dl(_gatedMp4Adapter(gates)),
+      hlsDownloader: _hlsDl(_idleAdapter()),
+      remuxer: _FakeRemuxer(),
+      config: const DownloadConfig(maxConcurrency: 1),
+    );
+    final rec = _Recorder(engine);
+
+    engine.submit(_task('a',
+        kind: SourceKind.mp4, url: 'https://cdn/a.mp4', dir: mkDir('a')));
+    engine.submit(_task('b',
+        kind: SourceKind.mp4, url: 'https://cdn/b.mp4', dir: mkDir('b')));
+    await rec.wait('a', TaskStatus.running);
+    expect(engine.tasks['b']!.status, TaskStatus.queued);
+
+    // 暂停仅排队（非活跃）的 b：没有 worker 收尾兜底，意图必须就地清理。
+    engine.pause('b');
+    await rec.wait('b', TaskStatus.paused);
+
+    gates['a.mp4']!.complete();
+    await rec.wait('a', TaskStatus.completed);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    // a 完成不得拉起已暂停的 b；a 的 worker 已收尾、b 从未活跃 → 意图表应为空。
+    expect(engine.tasks['b']!.status, TaskStatus.paused);
+    expect(engine.pendingIntentCount, 0,
+        reason: '非活跃任务的 pause 意图不得残留');
+
+    // 残留清理不得影响后续 resume：b 正常跑到 completed。
+    engine.resume('b');
+    gates['b.mp4']!.complete();
+    await rec.wait('b', TaskStatus.completed);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(engine.tasks['b']!.status, TaskStatus.completed);
+    expect(engine.pendingIntentCount, 0);
+
+    await rec.dispose();
+    await engine.dispose();
+  });
 }
