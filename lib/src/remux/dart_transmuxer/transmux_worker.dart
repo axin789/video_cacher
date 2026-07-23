@@ -64,6 +64,40 @@ Future<void> transmuxWorker(TransmuxRequest req) async {
 /// 廉价的 scavenge 回收，不在老生代堆积（大块读会把整段钉进老生代）。
 const int _feedChunkSize = 16 * 1024;
 
+/// 分片准备前瞻数：喂第 i 片时，第 i+1..i+_prepareAhead 片的读盘/解密已在路上。
+const int _prepareAhead = 2;
+
+/// 准备一个分片：明文片整片读入（不 spawn 子 isolate——无加密输入时流水线
+/// 只是按片读盘，无额外开销）；加密片的「读 + 解密」整体放子 isolate。
+/// diskBytes 为磁盘文件字节数——进度按它累计，与引擎按文件长度算的
+/// totalBytes 对齐（密文含 PKCS7 填充，比明文长）。
+Future<({Uint8List plain, int diskBytes})> _prepareSegment(
+    String path, TransmuxCrypto? crypto) async {
+  final iv = crypto?.ivByPath[path];
+  if (iv == null) {
+    final bytes = await File(path).readAsBytes();
+    return (plain: bytes, diskBytes: bytes.length);
+  }
+  final diskBytes = await File(path).length();
+  return (
+    plain: await _readAndDecryptInIsolate(path, crypto!.key, iv),
+    diskBytes: diskBytes,
+  );
+}
+
+/// 子 isolate 内完成加密片的「读盘 + 整片解密」（解密后置：PKCS7 去填充需要
+/// 完整密文尾块；AES 是纯 CPU，off-thread 才能与 demux 并行）。读盘也放在子
+/// isolate：spawn 消息只带 path/key/iv 三个小参数，几十 MB 级密文不做跨
+/// isolate 深拷，明文结果经 Isolate.exit 零拷贝移回。
+/// 独立的同步小函数：闭包只捕获三个参数，避免外层 async 函数上下文把不可
+/// 发送对象（RandomAccessFile 等）拖进 spawn 消息。
+Future<Uint8List> _readAndDecryptInIsolate(
+        String path, Uint8List key, Uint8List iv) =>
+    Isolate.run(() async {
+      final cipher = await File(path).readAsBytes();
+      return AesDecryptor.decryptCbc(cipher, key, iv);
+    });
+
 /// ES 临时文件的攒批写入器：小块（音频帧几百字节）先入缓冲，满了才落盘，
 /// 避免 GB 级输入产生几十万次 write syscall。
 class _EsWriter {
@@ -110,7 +144,8 @@ Future<int> _pipeline(TransmuxRequest req) async {
   // 第 1 遍：demux 边喂边把已封口单元转出（视频 AU→AVCC、音频 PES→裸 AAC 帧）
   // 追加到 `<outMp4>.v.es` / `<outMp4>.a.es` 两个 ES 临时文件；内存只留
   // 每样本的 int 元数据表（偏移/大小/时间戳）。第 2 遍：按表算好全部 box，
-  // 从 ES 文件区间拷贝出 mdat（见 buildMp4）。峰值 ≈ 单个分片 + 表。
+  // 从 ES 文件区间拷贝出 mdat（见 buildMp4）。峰值 ≈ (1 + _prepareAhead)
+  // 个分片 + 表（见下方分片准备流水线注释）。
   final demux = TsDemuxer();
   int totalBytes = 0;
   Uint8List? sps, pps;
@@ -186,40 +221,51 @@ Future<int> _pipeline(TransmuxRequest req) async {
         }
       }
 
+      // ---- 分片准备流水线：读盘/解密与 demux 并行 ----
+      // 旧实现在喂入循环里串行内联解密：喂第 i 片前 CPU 全耗在 AES 上（手机
+      // 单核纯 Dart AES 仅 5-15MB/s），demux 干等。现在把「读 + 解密」提前
+      // _prepareAhead 片启动：加密片的 AES 在 Isolate.run 子 isolate 里算，
+      // 与本片的 demux/喂入及相邻片解密并行。喂入顺序与语义不变：每片喂完发
+      // 一次 progress、逐块 fail-fast；第 j 片的准备错误在消费到第 j 片时经
+      // await 原样抛出。
+      // 内存上界：最多 1 + _prepareAhead 片明文同时存活（当前片 + 前瞻片），
+      // 约 3 × 分片大小、数十 MB 级——以此换 AES 不再串行阻塞流水线。
+      // 取消：主侧 Isolate.kill 杀本 worker 不会级联杀飞行中的 Isolate.run
+      // 子 isolate，它们各自算完这一片后静默退出——浪费有上界
+      // （≤ _prepareAhead 片解密），不做额外处理。
       final crypto = req.crypto;
-      for (final path in segmentFiles) {
-        final iv = crypto?.ivByPath[path];
-        if (iv != null) {
-          // 加密分片（解密后置）：PKCS7 去填充需要完整密文尾块，整片读入解密后
-          // 按块喂。进度按磁盘文件字节记，与引擎按文件长度算的 totalBytes 对齐。
-          final cipherBytes = await File(path).readAsBytes();
-          totalBytes += cipherBytes.length;
-          final plain = AesDecryptor.decryptCbc(cipherBytes, crypto!.key, iv);
-          for (var off = 0; off < plain.length; off += _feedChunkSize) {
-            final end = off + _feedChunkSize < plain.length
-                ? off + _feedChunkSize
-                : plain.length;
-            demux.feed(Uint8List.sublistView(plain, off, end));
-            _failFastOnPmt(demux);
-            await drain(all: false);
-          }
-        } else {
-          final raf = await File(path).open();
-          try {
-            while (true) {
-              final chunk = await raf.read(_feedChunkSize);
-              if (chunk.isEmpty) break;
-              totalBytes += chunk.length;
-              demux.feed(chunk);
-              // PMT 一见即校验视频编码：h265 等大任务不必读完全部分片才报错
-              _failFastOnPmt(demux);
-              await drain(all: false);
-            }
-          } finally {
-            await raf.close();
-          }
+      final pending = <Future<({Uint8List plain, int diskBytes})>>[];
+      var nextPrepare = 0;
+      void pump() {
+        while (nextPrepare < segmentFiles.length &&
+            pending.length <= _prepareAhead) {
+          final f = _prepareSegment(segmentFiles[nextPrepare++], crypto);
+          // 错误留到消费该片时经 await 抛出；不先挂 ignore 会被判定为未处理
+          // 异步错误（Future 可多次监听，错误仍会送达之后的 await）。
+          f.ignore();
+          pending.add(f);
+        }
+      }
+
+      Future<void> feedSegment(({Uint8List plain, int diskBytes}) seg) async {
+        totalBytes += seg.diskBytes;
+        final plain = seg.plain;
+        for (var off = 0; off < plain.length; off += _feedChunkSize) {
+          final end = off + _feedChunkSize < plain.length
+              ? off + _feedChunkSize
+              : plain.length;
+          demux.feed(Uint8List.sublistView(plain, off, end));
+          // PMT 一见即校验视频编码：h265 等大任务不必读完全部分片才报错
+          _failFastOnPmt(demux);
+          await drain(all: false);
         }
         req.reply.send({'progress': totalBytes});
+      }
+
+      pump(); // 启动第 0..=_prepareAhead 片的准备
+      while (pending.isNotEmpty) {
+        await feedSegment(await pending.removeAt(0));
+        pump(); // 当前片明文已随 feedSegment 返回可回收，再补位下一片
       }
       demux.finish();
       await drain(all: true);

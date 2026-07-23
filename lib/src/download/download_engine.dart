@@ -128,6 +128,8 @@ class DownloadEngine {
   }
 
   /// 暂停：登记意图（压过任何待定 resume）→ 活跃则取消 token / 停 remux，等待则出队 → 置 paused。
+  ///
+  /// remuxing 阶段暂停后恢复会重新转封装（转封装不可断点）。
   void pause(String taskId) {
     if (_disposed) return;
     final task = _tasks[taskId];

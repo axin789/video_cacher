@@ -277,5 +277,44 @@ void main() {
       print('sha256 plain=$plainHash enc=$encHash');
       expect(encHash, plainHash, reason: '解密后置必须对产物字节透明');
     });
+
+    test('前瞻解密流水线的错误传播：中段密文损坏 → 失败且无 .es/.part 残留', () async {
+      // 3 片加密输入，第 1 片密文尾块翻转一字节 → PKCS7 去填充失败。该错误
+      // 发生在前瞻子 isolate 里，必须在消费到该片时让 remux 以解密错误整体
+      // 失败（收到具体错误消息，而非未处理异步错误杀掉 worker 后的
+      // 'transmux worker exited'），且两遍式的中间产物已清理。
+      final tsBytes = fixture.readAsBytesSync();
+      final third = (tsBytes.length ~/ 188 ~/ 3) * 188;
+      final parts = [
+        Uint8List.sublistView(tsBytes, 0, third),
+        Uint8List.sublistView(tsBytes, third, third * 2),
+        Uint8List.sublistView(tsBytes, third * 2),
+      ];
+      final key =
+          Uint8List.fromList(List<int>.generate(16, (i) => i * 7 & 0xff));
+      final segs = <String>[];
+      final ivByPath = <String, Uint8List>{};
+      for (var i = 0; i < parts.length; i++) {
+        final iv = AesDecryptor.ivFromSequence(i);
+        final enc = _encrypt(parts[i], key, iv);
+        if (i == 1) enc[enc.length - 1] ^= 0xff; // 破坏尾块 padding
+        final f = File('${tmp.path}/bad_$i.ts.enc')..writeAsBytesSync(enc);
+        segs.add(f.path);
+        ivByPath[f.path] = iv;
+      }
+      final out = '${tmp.path}/bad.mp4';
+      final res = await DartTransmuxer().remux(
+        taskId: 'bad',
+        segmentFiles: segs,
+        outMp4: out,
+        dir: tmp.path,
+        crypto: TransmuxCrypto(key, ivByPath),
+      );
+      expect(res.ok, isFalse);
+      expect(res.error, contains('pad'), reason: '应带出解密错误：${res.error}');
+      for (final leftover in [out, '$out.part', '$out.v.es', '$out.a.es']) {
+        expect(File(leftover).existsSync(), isFalse, reason: leftover);
+      }
+    });
   });
 }
