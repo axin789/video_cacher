@@ -1,6 +1,4 @@
 PODS:
-  - video_cacher (0.0.1):
-    - Flutter
   - Flutter (1.0.0)
   - integration_test (0.0.1):
     - Flutter
@@ -10,47 +8,21 @@ PODS:
   - photo_manager (3.8.3):
     - Flutter
     - FlutterMacOS
-  - sqlite3 (3.52.0):
-    - sqlite3/common (= 3.52.0)
-  - sqlite3/common (3.52.0)
-  - sqlite3/dbstatvtab (3.52.0):
-    - sqlite3/common
-  - sqlite3/fts5 (3.52.0):
-    - sqlite3/common
-  - sqlite3/math (3.52.0):
-    - sqlite3/common
-  - sqlite3/perf-threadsafe (3.52.0):
-    - sqlite3/common
-  - sqlite3/rtree (3.52.0):
-    - sqlite3/common
-  - sqlite3/session (3.52.0):
-    - sqlite3/common
-  - sqlite3_flutter_libs (0.0.1):
+  - video_cacher (0.3.0):
+    - Flutter
+  - video_player_avfoundation (0.0.1):
     - Flutter
     - FlutterMacOS
-    - sqlite3 (~> 3.52.0)
-    - sqlite3/dbstatvtab
-    - sqlite3/fts5
-    - sqlite3/math
-    - sqlite3/perf-threadsafe
-    - sqlite3/rtree
-    - sqlite3/session
 
 DEPENDENCIES:
-  - video_cacher (from `.symlinks/plugins/video_cacher/ios`)
   - Flutter (from `Flutter`)
   - integration_test (from `.symlinks/plugins/integration_test/ios`)
   - path_provider_foundation (from `.symlinks/plugins/path_provider_foundation/darwin`)
   - photo_manager (from `.symlinks/plugins/photo_manager/darwin`)
-  - sqlite3_flutter_libs (from `.symlinks/plugins/sqlite3_flutter_libs/darwin`)
-
-SPEC REPOS:
-  trunk:
-    - sqlite3
+  - video_cacher (from `.symlinks/plugins/video_cacher/ios`)
+  - video_player_avfoundation (from `.symlinks/plugins/video_player_avfoundation/darwin`)
 
 EXTERNAL SOURCES:
-  video_cacher:
-    :path: ".symlinks/plugins/video_cacher/ios"
   Flutter:
     :path: Flutter
   integration_test:
@@ -59,17 +31,18 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/path_provider_foundation/darwin"
   photo_manager:
     :path: ".symlinks/plugins/photo_manager/darwin"
-  sqlite3_flutter_libs:
-    :path: ".symlinks/plugins/sqlite3_flutter_libs/darwin"
+  video_cacher:
+    :path: ".symlinks/plugins/video_cacher/ios"
+  video_player_avfoundation:
+    :path: ".symlinks/plugins/video_player_avfoundation/darwin"
 
 SPEC CHECKSUMS:
-  video_cacher: a90b2fedb1ae1f8afa82caf161bf66e7c0ae2311
   Flutter: e0871f40cf51350855a761d2e70bf5af5b9b5de7
   integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
   path_provider_foundation: 080d55be775b7414fd5a5ef3ac137b97b097e564
   photo_manager: fe4cbb0808b96f8be4af7ce6ae18dcd9c9b983c6
-  sqlite3: a51c07cf16e023d6c48abd5e5791a61a47354921
-  sqlite3_flutter_libs: b3e120efe9a82017e5552a620f696589ed4f62ab
+  video_cacher: fdca2f901d7a3e6371c33f7c90987bd8d66cb365
+  video_player_avfoundation: 2cef49524dd1f16c5300b9cd6efd9611ce03639b
 
 PODFILE CHECKSUM: 2c8040903f1c7de092a814b62e0ff998a796d9c2
 

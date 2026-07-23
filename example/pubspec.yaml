@@ -35,6 +35,8 @@ dev_dependencies:
     sdk: flutter
   flutter_test:
     sdk: flutter
+  # integration_test 里构造 AES 密文，比对平台 AES 与纯 Dart 是否逐字节一致。
+  pointycastle: ">=3.7.3 <5.0.0"
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is

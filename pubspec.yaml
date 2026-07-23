@@ -11,15 +11,12 @@ topics:
   - hls
   - offline
 
-# 相册保存依赖 photo_manager，仅这三端可用；无 web/windows/linux 支持。
-platforms:
-  android:
-  ios:
-  macos:
-
+# 平台清单由下方 flutter.plugin.platforms 推导（android/ios）。macOS 上没有
+# 原生实现：插件不注册，AES 自动落纯 Dart 兜底，其余功能仍是纯 Dart。
 environment:
   sdk: '>=3.6.0 <4.0.0'
-  flutter: '>=3.3.0'
+  # BackgroundIsolateBinaryMessenger（背景 isolate 用平台通道）自 3.7 起提供。
+  flutter: '>=3.7.0'
 
 dependencies:
   flutter:
@@ -37,3 +34,14 @@ dev_dependencies:
   flutter_lints: ^5.0.0
   # 测试里替换 PathProviderPlatform.instance，免 mock 平台通道。
   path_provider_platform_interface: ^2.1.0
+
+# 唯一的原生代码：把 HLS 的 AES-128-CBC 解密转交系统加密库（硬件 AES 指令）。
+# 不捆绑任何二进制，仅调用 OS API；平台缺失时自动退回纯 Dart。
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.videocacher.video_cacher
+        pluginClass: VideoCacherPlugin
+      ios:
+        pluginClass: VideoCacherPlugin
