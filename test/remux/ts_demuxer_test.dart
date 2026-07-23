@@ -223,6 +223,24 @@ void main() {
       expect(d.video, isNull); // 缺失 -> 上层最终报 Unsupported，而非崩溃
     });
 
+    test('PTS 33 位环绕展开为单调 64 位', () {
+      const max33 = 1 << 33;
+      final d = TsDemuxer();
+      d.feed(_tsPacket(pid: 0, pusi: true, payload: _pat()));
+      d.feed(_tsPacket(pid: 0x0100, pusi: true, payload: _pmt()));
+      d.feed(
+          _tsPacket(pid: 0x0101, pusi: true, payload: _videoPes(max33 - 3000)));
+      d.feed(_tsPacket(pid: 0x0101, pusi: true, payload: _videoPes(600)));
+      d.feed(_tsPacket(pid: 0x0101, pusi: true, payload: _videoPes(4200)));
+      d.finish();
+
+      final pts = d.video!.units.map((u) => u.pts!).toList();
+      expect(pts[0], max33 - 3000);
+      expect(pts[1], max33 + 600); // 环绕后进入下一纪元
+      expect(pts[2], max33 + 4200);
+      expect(pts[1] - pts[0], 3600); // 增量单调，无巨大负跳
+    });
+
     test('流尾截断的 PES 头不抛异常，之前的帧保留', () {
       final d = TsDemuxer();
       d.feed(_tsPacket(pid: 0, pusi: true, payload: _pat()));

@@ -54,6 +54,36 @@ int? _findBox(Uint8List b, int start, int end, String target) {
   return null;
 }
 
+/// 收集全部匹配类型 box 的 payload 起始 offset（按出现顺序）。
+List<int> _findBoxAll(Uint8List b, String target) {
+  final out = <int>[];
+  void walk(int s, int e) {
+    int o = s;
+    while (o + 8 <= e) {
+      final size = _u32(b, o);
+      final type = String.fromCharCodes(b, o + 4, o + 8);
+      if (type == target) out.add(o + 8);
+      if (size < 8) break;
+      if (_containers.contains(type)) walk(o + 8, o + size);
+      o += size;
+    }
+  }
+
+  walk(0, b.length);
+  return out;
+}
+
+/// 全文件字节扫描某 4CC 的首个出现位置（用于 stsd 内的样本条目）。
+int? _fourCCIndex(Uint8List b, String cc) {
+  final t = cc.codeUnits;
+  for (int i = 0; i + 4 <= b.length; i++) {
+    if (b[i] == t[0] && b[i + 1] == t[1] && b[i + 2] == t[2] && b[i + 3] == t[3]) {
+      return i;
+    }
+  }
+  return null;
+}
+
 void main() {
   // 最小 SPS/PPS（结构测试只用到前 4 字节生成 avcC）。
   final sps = Uint8List.fromList([0x67, 0x42, 0x00, 0x1e, 0x11, 0x22]);
@@ -134,13 +164,96 @@ void main() {
         aac: aac,
         firstAudioPts: 0,
       );
-      // 首个呈现 PTS=0（I 帧），dts[0]=0 -> mediaStart=0；空编辑 dEmpty=minPts=0
-      expect(r.mediaStart, 0);
+      // 样本含 pts<dts（最小 offset=-1000）：DTS 整体平移后 ctts 全部非负，
+      // mediaStart = minPts - vDts[0] = 0 - (-1000) = 1000；空编辑仍 = minPts = 0
+      expect(r.mediaStart, 1000);
       expect(r.emptyEditDur, 0);
-      // ctts[0] = pts-dts；I=0, P=2000, B=-1000...
-      expect(r.firstCtts.first, 0);
+      // ctts[0] = pts-dts 平移后：I=1000, P=3000, B=0...
+      expect(r.firstCtts.first, 1000);
       // 存在非零 ctts（B 帧）
       expect(r.firstCtts.any((c) => c != 0), isTrue);
+    });
+
+    test('pts<dts 时 ctts 不下溢（u32 全部 < 2^31）', () {
+      final bad = <VideoSample>[
+        VideoSample(Uint8List(10), 0, 0, true),
+        VideoSample(Uint8List(10), 2900, 3000, false), // pts < dts
+        VideoSample(Uint8List(10), 6000, 6000, false),
+      ];
+      final r = buildMp4(
+        vsamples: bad,
+        sps: sps,
+        pps: pps,
+        width: 320,
+        height: 240,
+        aac: aac,
+        firstAudioPts: 0,
+      );
+      final o = _findBox(r.bytes, 0, r.bytes.length, 'ctts')!;
+      final n = _u32(r.bytes, o + 4);
+      expect(n, greaterThan(0));
+      for (int i = 0; i < n; i++) {
+        final off = _u32(r.bytes, o + 8 + i * 8 + 4);
+        expect(off, lessThan(0x80000000), reason: 'ctts[$i]=$off 下溢');
+      }
+    });
+
+    test('无关键帧时省略 stss（缺省 = 全部 sync）', () {
+      final noKey = <VideoSample>[
+        VideoSample(Uint8List(10), 0, 0, false),
+        VideoSample(Uint8List(10), 3000, 3000, false),
+      ];
+      final r = buildMp4(
+        vsamples: noKey,
+        sps: sps,
+        pps: pps,
+        width: 320,
+        height: 240,
+        aac: aac,
+        firstAudioPts: 0,
+      );
+      final types = <String>[];
+      _collectTypes(r.bytes, 0, r.bytes.length, types);
+      expect(types, isNot(contains('stss')));
+    });
+
+    test('audio tkhd duration 用 movie timescale 而非采样数', () {
+      // 100 帧 AAC@44100 = 102400 采样 -> movie(90000) = 208979
+      final aac100 = AacInfo(List.generate(100, (_) => Uint8List(8)), 2, 4, 2);
+      final r = buildMp4(
+        vsamples: samples,
+        sps: sps,
+        pps: pps,
+        width: 320,
+        height: 240,
+        aac: aac100,
+        firstAudioPts: 0,
+      );
+      final tkhds = _findBoxAll(r.bytes, 'tkhd');
+      expect(tkhds.length, 2);
+      // fullbox v0: verflags(4) creation(4) mod(4) trackid(4) reserved(4) dur(4)
+      final audioTkhdDur = _u32(r.bytes, tkhds[1] + 4 + 16);
+      expect(audioTkhdDur, (100 * 1024 * 90000) ~/ 44100);
+      final mvhdOff = _findBox(r.bytes, 0, r.bytes.length, 'mvhd')!;
+      final mvhdDur = _u32(r.bytes, mvhdOff + 4 + 12);
+      expect(mvhdDur, greaterThanOrEqualTo(audioTkhdDur));
+    });
+
+    test('sampleRate >= 65536 时 mp4a 采样率字段写 0（esds 为准）', () {
+      final aac96k = AacInfo([Uint8List(8)], 2, 0, 2); // freqIndex 0 = 96000
+      final r = buildMp4(
+        vsamples: samples,
+        sps: sps,
+        pps: pps,
+        width: 320,
+        height: 240,
+        aac: aac96k,
+        firstAudioPts: 0,
+      );
+      // mp4a payload 前 24 字节后是 16.16 采样率的高 16 位
+      final i = _fourCCIndex(r.bytes, 'mp4a')!;
+      final rateHi = (r.bytes[i + 28] << 8) | r.bytes[i + 29];
+      expect(rateHi, 0);
     });
   });
 

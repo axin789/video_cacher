@@ -69,7 +69,7 @@ Uint8List _fullbox(String type, int version, int flags, List<int> payload) {
 /// （media_time = 最小 composition offset）对齐，B 帧用 ctts 表达。
 ///
 /// 当前 VOD 场景的硬限制（未处理，业务需知）：
-///  - PTS 33-bit 环绕未处理：超长流 PTS 回绕会导致时间戳错乱。
+///  - PTS 33-bit 环绕已在 TsDemuxer 展开为单调 64 位，这里默认输入已单调。
 ///  - 单个 mdat 用 32 位 size + stco 用 32 位偏移：>4GB 产物会溢出（未写 co64）。
 ///  - 整流入内存（mdat/样本表全量驻留）：超长/超大片会 OOM。
 Mp4BuildResult buildMp4({
@@ -112,6 +112,19 @@ Mp4BuildResult buildMp4({
   // PTS 落后。真实点播样本一般是音频先起，故本版暂不处理该情形。
   final vDts = vs.map((s) => s.dts - globalMin).toList();
   final vPts = vs.map((s) => s.pts - globalMin).toList();
+  // 损坏流可能出现 pts<dts（负 composition offset），ctts v0 无符号、_u32 会
+  // 下溢成天文数字：把全部 DTS 平移 min(pts-dts)，帧间隔与呈现时间不变，
+  // ctts 恒 >=0，mediaStart 公式经 vDts[0] 自洽。
+  int minCttsOff = 0;
+  for (int i = 0; i < vDts.length; i++) {
+    final off = vPts[i] - vDts[i];
+    if (off < minCttsOff) minCttsOff = off;
+  }
+  if (minCttsOff < 0) {
+    for (int i = 0; i < vDts.length; i++) {
+      vDts[i] += minCttsOff;
+    }
+  }
   final vDur = <int>[];
   for (int i = 0; i < vDts.length; i++) {
     if (i + 1 < vDts.length) {
@@ -127,6 +140,8 @@ Mp4BuildResult buildMp4({
   const videoTimescale = 90000;
   final audioSampleRate = aac.sampleRate;
   final aTotalDur = aac.frames.length * 1024;
+  // tkhd/mvhd 的时长用 movie timescale；mdhd 才用采样率 timescale
+  final aTrackMovieDur = (aTotalDur * movieTimescale) ~/ audioSampleRate;
 
   // offsets: ftyp + mdat header(8) then body
   final ftyp = _box('ftyp', [
@@ -265,7 +280,8 @@ Mp4BuildResult buildMp4({
     p.add(_u16(aac.channels)); // channelcount
     p.add(_u16(16)); // samplesize
     p.add(_u32(0)); // pre-defined+reserved
-    p.add(_u16(audioSampleRate)); // samplerate (upper 16 of 16.16)
+    // samplerate (upper 16 of 16.16)；88.2k/96k 放不进 u16 时写 0，解码器读 esds
+    p.add(_u16(audioSampleRate < 0x10000 ? audioSampleRate : 0));
     p.add(_u16(0));
     p.add(esds());
     return _box('mp4a', p.toBytes());
@@ -287,7 +303,8 @@ Mp4BuildResult buildMp4({
     ...stsd(avc1()),
     ...stts(vDur),
     ...cttsBox(ctts),
-    ...stssBox(keyIdx),
+    // 无关键帧时按规范省略 stss（缺省 = 全部 sync），不写 entry_count=0
+    if (keyIdx.isNotEmpty) ...stssBox(keyIdx),
     ...stscOneChunk(vs.length),
     ...stszBox(vSizes),
     ...stcoBox(vChunkOffset),
@@ -412,7 +429,7 @@ Mp4BuildResult buildMp4({
   }
 
   final aTrak = _box('trak', [
-    ...tkhdAudio(2, aTotalDur),
+    ...tkhdAudio(2, aTrackMovieDur),
     ...aMdia,
   ]);
 
@@ -421,8 +438,8 @@ Mp4BuildResult buildMp4({
     p.add(_u32(0));
     p.add(_u32(0));
     p.add(_u32(movieTimescale));
-    final aMovieDur = (aTotalDur * movieTimescale) ~/ audioSampleRate;
-    p.add(_u32(vTrackMovieDur > aMovieDur ? vTrackMovieDur : aMovieDur));
+    p.add(_u32(
+        vTrackMovieDur > aTrackMovieDur ? vTrackMovieDur : aTrackMovieDur));
     p.add(_u32(0x00010000)); // rate
     p.add(_u16(0x0100)); // volume
     p.add(_u16(0));

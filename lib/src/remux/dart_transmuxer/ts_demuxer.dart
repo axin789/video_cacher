@@ -28,6 +28,9 @@ class ElementaryStream {
   final List<PesUnit> units = [];
   PesUnit? _cur;
 
+  static const int _wrapPeriod = 1 << 33; // PTS/DTS 为 33 位计数
+  int? _wrapPrev;
+
   ElementaryStream(this.pid, this.streamType);
 
   void onPacket(Uint8List payload, bool pusi) {
@@ -38,10 +41,25 @@ class ElementaryStream {
     if (_cur != null) _cur!.data.add(payload);
   }
 
+  /// 33 位环绕展开：把新值放到与上一值最近的纪元，输出单调 64 位时间戳。
+  int _unwrap(int raw) {
+    final prev = _wrapPrev;
+    if (prev == null) return _wrapPrev = raw;
+    int v = (prev ~/ _wrapPeriod) * _wrapPeriod + raw;
+    if (v - prev > _wrapPeriod ~/ 2) {
+      v -= _wrapPeriod;
+    } else if (prev - v > _wrapPeriod ~/ 2) {
+      v += _wrapPeriod;
+    }
+    return _wrapPrev = v;
+  }
+
   void _flush() {
     if (_cur != null) {
       final u = _cur!;
       _parsePes(u);
+      if (u.pts != null) u.pts = _unwrap(u.pts!);
+      if (u.dts != null) u.dts = _unwrap(u.dts!);
       if (u.pts == null && TsStreamType.isVideo(streamType) && units.isNotEmpty) {
         // 有界长度 PES 会把一个 AU 拆成多包，续包不带 PTS：并回上一单元
         units.last.data.add(u.data.toBytes());
