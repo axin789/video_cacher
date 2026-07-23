@@ -41,6 +41,20 @@ class ElementaryStream {
     if (_cur != null) _cur!.data.add(payload);
   }
 
+  /// 取走已封口的 PES 单元（返回并从 [units] 移除），供上层边喂边消费。
+  ///
+  /// 封口 ≠ 终结：有界 PES 把一个 AU 拆成多包时，续包（无 PTS）在**下一单元**
+  /// `_flush` 时并回 `units.last`。因此非 [all] 模式必须把最近一个已封口单元
+  /// 留驻（只取前 length-1 个），等更新的单元封口后它才不可能再收续包；
+  /// [finish] 之后用 [all]=true 取尽。
+  List<PesUnit> takeFinalized({bool all = false}) {
+    final end = all ? units.length : units.length - 1;
+    if (end <= 0) return const [];
+    final taken = units.sublist(0, end);
+    units.removeRange(0, end);
+    return taken;
+  }
+
   /// 33 位环绕展开：把新值放到与上一值最近的纪元，输出单调 64 位时间戳。
   int _unwrap(int raw) {
     final prev = _wrapPrev;

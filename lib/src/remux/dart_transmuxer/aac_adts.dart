@@ -6,33 +6,41 @@ const List<int> aacFreqTable = [
   16000, 12000, 11025, 8000, 7350,
 ];
 
-/// 从一串 ADTS 数据中解析出的 AAC 信息。
-class AacInfo {
-  final List<Uint8List> frames; // 每帧裸 AAC（去掉 ADTS 头），一帧 = 1024 采样
+/// 一条 AAC 音轨的样本表：帧字节已流式写出（ES 临时文件），这里只留
+/// 每帧大小与首帧头部参数（构建 mp4 的 stsz/esds 所需）。
+class AacTrack {
+  final List<int> frameSizes; // 每帧裸 AAC 字节数（去 ADTS 头），一帧 = 1024 采样
   final int objectType; // AOT（LC=2）
   final int freqIndex; // sampling_frequency_index
   final int channels; // 声道数
   int get sampleRate => aacFreqTable[freqIndex];
 
-  const AacInfo(this.frames, this.objectType, this.freqIndex, this.channels);
+  const AacTrack(this.frameSizes, this.objectType, this.freqIndex, this.channels);
 }
 
-/// 逐个 PES payload 解析 ADTS 帧。传入的 [payloads] 是音频 PES 的裸数据序列。
+/// 流式 ADTS 解析器：逐段喂入音频 PES payload（[feed]），完整帧即时返回，
+/// 不整装累积——GB 级输入驻留内存的只有 [int] 帧大小表与跨段残余字节。
 ///
 /// ADTS 帧可能跨 PES 边界：payload 末尾不完整的帧（含不足 7 字节的半个帧头）
-/// 会缓存并与下一段拼接后继续解析，不丢帧。
-AacInfo? parseAdts(Iterable<Uint8List> payloads) {
-  final frames = <Uint8List>[];
-  int? objType, freqIdx, chan;
-  Uint8List carry = Uint8List(0);
-  for (final p in payloads) {
+/// 会缓存并与下一段拼接后继续解析，不丢帧。头部参数取首个完整帧。
+class AdtsStream {
+  int? _objectType, _freqIndex, _channels;
+  final List<int> _frameSizes = [];
+  Uint8List _carry = _empty;
+
+  static final Uint8List _empty = Uint8List(0);
+
+  /// 喂入一段 PES payload，返回其中解析出的完整帧（裸 AAC，去 ADTS 头）。
+  /// 返回的帧是喂入缓冲上的视图，调用方应在下次 [feed] 前消费完。
+  List<Uint8List> feed(Uint8List payload) {
+    final frames = <Uint8List>[];
     Uint8List d;
-    if (carry.isEmpty) {
-      d = p;
+    if (_carry.isEmpty) {
+      d = payload;
     } else {
-      d = Uint8List(carry.length + p.length)
-        ..setAll(0, carry)
-        ..setAll(carry.length, p);
+      d = Uint8List(_carry.length + payload.length)
+        ..setAll(0, _carry)
+        ..setAll(_carry.length, payload);
     }
     int i = 0;
     while (i < d.length) {
@@ -54,17 +62,26 @@ AacInfo? parseAdts(Iterable<Uint8List> payloads) {
       }
       if (i + frameLen > d.length) break; // 帧体不完整，留待下一段
       final hdr = protAbsent == 1 ? 7 : 9;
-      objType ??= profile + 1; // AOT = profile+1（LC->2）
-      freqIdx ??= fIdx;
-      chan ??= ch;
-      frames.add(Uint8List.sublistView(d, i + hdr, i + frameLen));
+      _objectType ??= profile + 1; // AOT = profile+1（LC->2）
+      _freqIndex ??= fIdx;
+      _channels ??= ch;
+      final frame = Uint8List.sublistView(d, i + hdr, i + frameLen);
+      _frameSizes.add(frame.length);
+      frames.add(frame);
       i += frameLen;
     }
-    carry = i < d.length ? d.sublist(i) : Uint8List(0);
+    // 残余必须拷贝（sublist）而非取视图，否则会把整段 payload 钉在内存里。
+    _carry = i < d.length ? d.sublist(i) : _empty;
+    return frames;
   }
-  if (frames.isEmpty || objType == null || freqIdx == null || chan == null) {
-    return null;
+
+  /// 已解析出的音轨样本表；无可解码帧或采样率索引非法时为 null。
+  AacTrack? get track {
+    final obj = _objectType, fIdx = _freqIndex, ch = _channels;
+    if (_frameSizes.isEmpty || obj == null || fIdx == null || ch == null) {
+      return null;
+    }
+    if (fIdx >= aacFreqTable.length) return null;
+    return AacTrack(_frameSizes, obj, fIdx, ch);
   }
-  if (freqIdx >= aacFreqTable.length) return null;
-  return AacInfo(frames, objType, freqIdx, chan);
 }

@@ -133,11 +133,15 @@ class DartTransmuxer implements Remuxer {
   }
 
   void _deletePart(String outMp4) {
-    try {
-      final f = File('$outMp4.part');
-      if (f.existsSync()) f.deleteSync();
-    } catch (_) {
-      // 清理失败不影响取消语义。
+    // kill 强停时 worker 自己的清理代码不会运行：两遍式转封装的 ES 临时文件
+    // （.v.es/.a.es）也要在主侧一并删掉。
+    for (final path in ['$outMp4.part', '$outMp4.v.es', '$outMp4.a.es']) {
+      try {
+        final f = File(path);
+        if (f.existsSync()) f.deleteSync();
+      } catch (_) {
+        // 清理失败不影响取消语义。
+      }
     }
   }
 

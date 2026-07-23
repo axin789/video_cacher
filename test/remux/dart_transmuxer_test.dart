@@ -111,6 +111,30 @@ int _countTraks(Uint8List b) {
   return count;
 }
 
+/// 第一个 stsz（video trak 在前）的 sample_count。
+int _videoSampleCount(Uint8List b) {
+  const containers = {'moov', 'trak', 'mdia', 'minf', 'stbl'};
+  int? found;
+  void walk(int s, int e) {
+    int o = s;
+    while (o + 8 <= e && found == null) {
+      final size = _u32(b, o);
+      final type = String.fromCharCodes(b, o + 4, o + 8);
+      // fullbox: verflags(4) + sample_size(4) + sample_count(4)
+      if (type == 'stsz') {
+        found = _u32(b, o + 8 + 8);
+        return;
+      }
+      if (size < 8) break;
+      if (containers.contains(type)) walk(o + 8, o + size);
+      o += size;
+    }
+  }
+
+  walk(0, b.length);
+  return found ?? -1;
+}
+
 void main() {
   group('DartTransmuxer isolate 行为', () {
     final fixture = File('test/fixtures/ts/h264_aac.ts');
@@ -198,6 +222,126 @@ void main() {
       expect(File(out).existsSync(), isFalse, reason: '不应产出 mp4');
       expect(File('$out.part').existsSync(), isFalse,
           reason: '取消后应清理 .part');
+      expect(File('$out.v.es').existsSync(), isFalse,
+          reason: '取消后应清理视频 ES 临时文件');
+      expect(File('$out.a.es').existsSync(), isFalse,
+          reason: '取消后应清理音频 ES 临时文件');
+    });
+  });
+
+  group('两遍流式转封装', () {
+    final fixture = File('test/fixtures/ts/h264_aac.ts');
+    late Directory tmp;
+
+    setUp(() async {
+      VideoCacherLog.verbose = false;
+      tmp = await Directory.systemTemp.createTemp('transmux_es_');
+    });
+
+    tearDown(() async {
+      if (tmp.existsSync()) await tmp.delete(recursive: true);
+    });
+
+    Future<Uint8List> remuxOk(String name, List<String> segs) async {
+      final out = '${tmp.path}/$name.mp4';
+      final res = await DartTransmuxer().remux(
+        taskId: name,
+        segmentFiles: segs,
+        outMp4: out,
+        dir: tmp.path,
+      );
+      expect(res.ok, isTrue, reason: res.error);
+      return File(out).readAsBytes();
+    }
+
+    test('成功后无 .v.es/.a.es/.part 残留', () async {
+      final out = '${tmp.path}/clean.mp4';
+      final res = await DartTransmuxer().remux(
+        taskId: 'clean',
+        segmentFiles: [fixture.path],
+        outMp4: out,
+        dir: tmp.path,
+      );
+      expect(res.ok, isTrue, reason: res.error);
+      expect(File(out).existsSync(), isTrue);
+      expect(File('$out.part').existsSync(), isFalse);
+      expect(File('$out.v.es').existsSync(), isFalse,
+          reason: '成功后应删除视频 ES 临时文件');
+      expect(File('$out.a.es').existsSync(), isFalse,
+          reason: '成功后应删除音频 ES 临时文件');
+    });
+
+    test('分片在非 AU 对齐的 188 边界拆开：产物与单段逐字节一致', () async {
+      // AU 跨多个 TS 包：任取一个流中段的包边界拆分，AU 必然横跨两段
+      // （跨多次 drain），锁住增量转出与单次喂入的等价性。
+      final bytes = await fixture.readAsBytes();
+      const splitAt = 101 * 188;
+      final seg0 = File('${tmp.path}/s0.ts')
+        ..writeAsBytesSync(bytes.sublist(0, splitAt));
+      final seg1 = File('${tmp.path}/s1.ts')
+        ..writeAsBytesSync(bytes.sublist(splitAt));
+
+      final whole = await remuxOk('whole', [fixture.path]);
+      final split = await remuxOk('split', [seg0.path, seg1.path]);
+      expect(split, whole, reason: '多段喂入必须与单段产物逐字节一致');
+    });
+
+    test('有界 PES 续包跨分片边界：并回上一单元，不多算帧', () async {
+      // AU：SPS+PPS+IDR，拆成 PES1（带 PTS，前 30 字节）+ PES2（续包无 PTS）。
+      // seg1 里 PES2 的 PUSI 已把 PES1 封口（进 units 但尚未取走），续包本体
+      // 落在 seg2——若 drain 把最近封口单元也取走，续包将无处并回。
+      final au = <int>[
+        0x00, 0x00, 0x00, 0x01, ..._spsNal,
+        0x00, 0x00, 0x00, 0x01, ..._ppsNal,
+        0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x21,
+      ];
+      const cut = 30;
+      final part1 = au.sublist(0, cut);
+      final part2 = au.sublist(cut);
+      final pes1 = _tsPacketAf(pid: 0x0101, pusi: true, payload: [
+        0x00, 0x00, 0x01, 0xe0,
+        0x00, 3 + 5 + part1.length, // 有界 PES_packet_length
+        0x80, 0x80, 0x05, ..._pts(90000),
+        ...part1,
+      ]);
+      final pes2 = _tsPacketAf(pid: 0x0101, pusi: true, cc: 1, payload: [
+        0x00, 0x00, 0x01, 0xe0,
+        0x00, 3 + part2.length,
+        0x80, 0x00, 0x00, // 无 pts/dts 的续包
+        ...part2,
+      ]);
+      final pes3 = _tsPacketAf(pid: 0x0101, pusi: true, cc: 2, payload: [
+        0x00, 0x00, 0x01, 0xe0, 0x00, 0x00,
+        0x80, 0x80, 0x05, ..._pts(90000 + 3600),
+        0x00, 0x00, 0x00, 0x01, 0x41, 0x88, 0x84, 0x21,
+      ]);
+      final audio = _tsPacketAf(pid: 0x0102, pusi: true, payload: [
+        0x00, 0x00, 0x01, 0xc0, 0x00, 0x00,
+        0x80, 0x80, 0x05, ..._pts(90000),
+        ..._adtsFrame(List.filled(13, 0x11)),
+        ..._adtsFrame(List.filled(13, 0x22)),
+      ]);
+      final head = BytesBuilder(copy: false)
+        ..add(_tsPacket(pid: 0, pusi: true, payload: _pat()))
+        ..add(_tsPacket(pid: 0x0100, pusi: true, payload: _pmtMultiAudio()))
+        ..add(pes1)
+        ..add(pes2);
+      final tail = BytesBuilder(copy: false)
+        ..add(pes3)
+        ..add(audio);
+      final headBytes = head.takeBytes();
+      final tailBytes = tail.takeBytes();
+
+      final seg1 = File('${tmp.path}/c0.ts')..writeAsBytesSync(headBytes);
+      final seg2 = File('${tmp.path}/c1.ts')..writeAsBytesSync(tailBytes);
+      final whole = File('${tmp.path}/cw.ts')
+        ..writeAsBytesSync([...headBytes, ...tailBytes]);
+
+      final split = await remuxOk('csplit', [seg1.path, seg2.path]);
+      final single = await remuxOk('cwhole', [whole.path]);
+      expect(split, single, reason: '跨分片续包必须与单段产物逐字节一致');
+      // 视频恰好 2 帧（续包并回，不成为第三帧）
+      expect(_videoSampleCount(split), 2);
     });
   });
 

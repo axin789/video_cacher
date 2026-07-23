@@ -4,13 +4,16 @@ import 'dart:typed_data';
 import 'aac_adts.dart';
 import 'h264_parser.dart';
 
-/// 一帧视频样本：AVCC（4 字节长度前缀）数据 + 时间戳 + 是否关键帧。
+/// 一帧视频样本的元数据：AVCC 字节已流式写入 ES 临时文件，这里只留定位
+/// （[offset]/[size]）+ 时间戳 + 是否关键帧——纯 int，表大小与视频时长成
+/// 正比而与字节量无关。
 class VideoSample {
-  final Uint8List data; // AVCC length-prefixed
+  final int offset; // 在视频 ES 临时文件内的字节偏移（写入顺序累加）
+  final int size; // AVCC（4 字节长度前缀）数据字节数
   final int pts;
   final int dts;
   final bool keyframe;
-  const VideoSample(this.data, this.pts, this.dts, this.keyframe);
+  const VideoSample(this.offset, this.size, this.pts, this.dts, this.keyframe);
 }
 
 /// mp4 构建产物统计（文件本体已流式写入 [buildMp4] 的 outPath）。
@@ -63,8 +66,10 @@ Uint8List _fullbox(String type, int version, int flags, List<int> payload) {
   return _box(type, b.toBytes());
 }
 
-/// 用已解析好的 video 样本 + audio 帧，构建一个 fragmented-free 的 mp4，
-/// 流式写入 [outPath]（ftyp → mdat → moov，边写边释放，不整装内存）。
+/// 用样本表（video [VideoSample] 元数据 + audio [AacTrack] 帧大小）构建一个
+/// fragmented-free 的 mp4，流式写入 [outPath]（ftyp → mdat → moov）。
+/// 样本字节不经内存整装：mdat 体从 [videoEs]/[audioEs] 两个 ES 临时文件
+/// 分块拷贝，峰值内存只有固定大小的读写缓冲。
 ///
 /// 时间基线与 edit list 复刻已验证原型（framemd5 与 `ffmpeg -c copy` 逐帧一致）：
 /// A/V 两轨统一以「全局最小 PTS」为基线，视频用空编辑 + media 编辑
@@ -79,8 +84,10 @@ Future<Mp4BuildResult> buildMp4({
   required Uint8List pps,
   required int width,
   required int height,
-  required AacInfo aac,
+  required AacTrack aac,
   required int firstAudioPts,
+  required String videoEs,
+  required String audioEs,
   required String outPath,
 }) async {
   // decode order = DTS 升序（TS 通常已如此，排序兜底）
@@ -88,10 +95,11 @@ Future<Mp4BuildResult> buildMp4({
     ..sort((a, b) => a.dts.compareTo(b.dts));
 
   // ---- mdat 尺寸：先 video chunk 再 audio chunk（样本字节到写入时才落盘）----
-  final vSizes = <int>[for (final s in vs) s.data.length];
+  final vSizes = <int>[for (final s in vs) s.size];
   final vChunkSize = vSizes.fold<int>(0, (a, b) => a + b);
-  final aSizes = <int>[for (final f in aac.frames) f.length];
-  final mdatSize = vChunkSize + aSizes.fold<int>(0, (a, b) => a + b);
+  final aSizes = aac.frameSizes;
+  final aChunkSize = aSizes.fold<int>(0, (a, b) => a + b);
+  final mdatSize = vChunkSize + aChunkSize;
 
   // ---- video timing ----
   // 呈现基线只能用 PTS，绝不能混入 DTS：含 B 帧时 DTS<PTS，若用视频首个 DTS
@@ -132,7 +140,7 @@ Future<Mp4BuildResult> buildMp4({
   const movieTimescale = 90000;
   const videoTimescale = 90000;
   final audioSampleRate = aac.sampleRate;
-  final aTotalDur = aac.frames.length * 1024;
+  final aTotalDur = aSizes.length * 1024;
   // tkhd/mvhd 的时长用 movie timescale；mdhd 才用采样率 timescale
   final aTrackMovieDur = (aTotalDur * movieTimescale) ~/ audioSampleRate;
 
@@ -304,8 +312,8 @@ Future<Mp4BuildResult> buildMp4({
   ]);
   final aStbl = _box('stbl', [
     ...stsd(mp4a()),
-    ...stts(List.filled(aac.frames.length, 1024)),
-    ...stscOneChunk(aac.frames.length),
+    ...stts(List.filled(aSizes.length, 1024)),
+    ...stscOneChunk(aSizes.length),
     ...stszBox(aSizes),
     ...stcoBox(aChunkOffset),
   ]);
@@ -449,9 +457,11 @@ Future<Mp4BuildResult> buildMp4({
 
   final moov = _box('moov', [...mvhd(), ...vTrak, ...aTrak]);
 
-  // ---- 流式落盘：ftyp + mdat 头，逐样本写 mdat 体，最后 moov ----
+  // ---- 流式落盘：ftyp + mdat 头，mdat 体从 ES 文件区间拷贝，最后 moov ----
   // 复用一个 1MB 缓冲攒批（兼顾 syscall 数与零垃圾），满了才真正写盘。
   final raf = await File(outPath).open(mode: FileMode.write);
+  final vEsRaf = await File(videoEs).open();
+  final aEsRaf = await File(audioEs).open();
   try {
     final wbuf = Uint8List(1 << 20);
     var wlen = 0;
@@ -471,19 +481,46 @@ Future<Mp4BuildResult> buildMp4({
       }
     }
 
+    // 从 ES 临时文件拷贝一段区间到输出（1MB 分块经 put 攒批）。
+    final copyBuf = Uint8List(1 << 20);
+    Future<void> copyRange(RandomAccessFile src, int start, int len) async {
+      await src.setPosition(start);
+      var remain = len;
+      while (remain > 0) {
+        final take = remain < copyBuf.length ? remain : copyBuf.length;
+        final got = await src.readInto(copyBuf, 0, take);
+        if (got <= 0) {
+          throw FileSystemException('ES temp file truncated', src.path);
+        }
+        await put(Uint8List.sublistView(copyBuf, 0, got));
+        remain -= got;
+      }
+    }
+
     await put(ftyp);
     await put(_u32(8 + mdatSize));
     await put('mdat'.codeUnits);
+    // video：按 decode(DTS) 顺序拷贝；到达顺序通常已是 DTS 序，相邻样本在
+    // ES 文件里连续时合并为一次大区间拷贝，避免逐样本 seek。
+    int runStart = -1, runEnd = -1;
     for (final s in vs) {
-      await put(s.data);
+      if (runStart >= 0 && s.offset == runEnd) {
+        runEnd += s.size;
+        continue;
+      }
+      if (runStart >= 0) await copyRange(vEsRaf, runStart, runEnd - runStart);
+      runStart = s.offset;
+      runEnd = s.offset + s.size;
     }
-    for (final f in aac.frames) {
-      await put(f);
-    }
+    if (runStart >= 0) await copyRange(vEsRaf, runStart, runEnd - runStart);
+    // audio：帧的写入序即 mdat 序，整段顺序拷贝
+    if (aChunkSize > 0) await copyRange(aEsRaf, 0, aChunkSize);
     await put(moov);
     if (wlen > 0) await raf.writeFrom(wbuf, 0, wlen);
   } finally {
     await raf.close();
+    await vEsRaf.close();
+    await aEsRaf.close();
   }
 
   return Mp4BuildResult(

@@ -85,20 +85,30 @@ int? _fourCCIndex(Uint8List b, String cc) {
   return null;
 }
 
+/// 按喂入顺序给样本表补上 .v.es 内的累计 offset。
+/// 行格式：(size, pts, dts, keyframe)。
+List<VideoSample> _vtable(List<(int, int, int, bool)> rows) {
+  var off = 0;
+  return [
+    for (final (size, pts, dts, key) in rows)
+      VideoSample((off += size) - size, size, pts, dts, key),
+  ];
+}
+
 void main() {
   // 最小 SPS/PPS（结构测试只用到前 4 字节生成 avcC）。
   final sps = Uint8List.fromList([0x67, 0x42, 0x00, 0x1e, 0x11, 0x22]);
   final pps = Uint8List.fromList([0x68, 0xce, 0x3c, 0x80]);
 
   // B 帧重排：解码顺序 dts 递增，pts 有前后交错（pts>dts 出现）。
-  final samples = <VideoSample>[
-    VideoSample(Uint8List(100), 0, 0, true), // I: pts==dts
-    VideoSample(Uint8List(80), 3000, 1000, false), // P: pts>dts
-    VideoSample(Uint8List(60), 1000, 2000, false), // B: pts<dts
-    VideoSample(Uint8List(60), 2000, 3000, false), // B
-  ];
-  final aac = AacInfo(
-    [Uint8List(50), Uint8List(50), Uint8List(50)],
+  final samples = _vtable([
+    (100, 0, 0, true), // I: pts==dts
+    (80, 3000, 1000, false), // P: pts>dts
+    (60, 1000, 2000, false), // B: pts<dts
+    (60, 2000, 3000, false), // B
+  ]);
+  const aac = AacTrack(
+    [50, 50, 50],
     2, // AOT LC
     4, // 44100
     2, // stereo
@@ -107,20 +117,32 @@ void main() {
   late Directory tmp;
   int buildSeq = 0;
 
-  /// buildMp4 已改为流式写文件：落到临时文件再读回字节供结构断言。
+  /// buildMp4 取样本表 + ES 临时文件流式写 mp4：先按表落两个 .es（内容零填充，
+  /// 结构断言只关心大小/偏移），产物读回字节供断言。
   Future<(Mp4BuildResult, Uint8List)> build({
     List<VideoSample>? vsamples,
-    AacInfo? aacInfo,
+    AacTrack? aacTrack,
+    int firstAudioPts = 0,
   }) async {
+    final vs = vsamples ?? samples;
+    final track = aacTrack ?? aac;
     final path = '${tmp.path}/out_${buildSeq++}.mp4';
+    final vEs = '$path.v.es';
+    final aEs = '$path.a.es';
+    File(vEs).writeAsBytesSync(
+        Uint8List(vs.fold<int>(0, (a, s) => a + s.size)));
+    File(aEs).writeAsBytesSync(
+        Uint8List(track.frameSizes.fold<int>(0, (a, b) => a + b)));
     final r = await buildMp4(
-      vsamples: vsamples ?? samples,
+      vsamples: vs,
       sps: sps,
       pps: pps,
       width: 320,
       height: 240,
-      aac: aacInfo ?? aac,
-      firstAudioPts: 0,
+      aac: track,
+      firstAudioPts: firstAudioPts,
+      videoEs: vEs,
+      audioEs: aEs,
       outPath: path,
     );
     return (r, File(path).readAsBytesSync());
@@ -186,11 +208,11 @@ void main() {
     });
 
     test('pts<dts 时 ctts 不下溢（u32 全部 < 2^31）', () async {
-      final bad = <VideoSample>[
-        VideoSample(Uint8List(10), 0, 0, true),
-        VideoSample(Uint8List(10), 2900, 3000, false), // pts < dts
-        VideoSample(Uint8List(10), 6000, 6000, false),
-      ];
+      final bad = _vtable([
+        (10, 0, 0, true),
+        (10, 2900, 3000, false), // pts < dts
+        (10, 6000, 6000, false),
+      ]);
       final (_, bytes) = await build(vsamples: bad);
       final o = _findBox(bytes, 0, bytes.length, 'ctts')!;
       final n = _u32(bytes, o + 4);
@@ -202,10 +224,10 @@ void main() {
     });
 
     test('无关键帧时省略 stss（缺省 = 全部 sync）', () async {
-      final noKey = <VideoSample>[
-        VideoSample(Uint8List(10), 0, 0, false),
-        VideoSample(Uint8List(10), 3000, 3000, false),
-      ];
+      final noKey = _vtable([
+        (10, 0, 0, false),
+        (10, 3000, 3000, false),
+      ]);
       final (_, bytes) = await build(vsamples: noKey);
       final types = <String>[];
       _collectTypes(bytes, 0, bytes.length, types);
@@ -214,8 +236,8 @@ void main() {
 
     test('audio tkhd duration 用 movie timescale 而非采样数', () async {
       // 100 帧 AAC@44100 = 102400 采样 -> movie(90000) = 208979
-      final aac100 = AacInfo(List.generate(100, (_) => Uint8List(8)), 2, 4, 2);
-      final (_, bytes) = await build(aacInfo: aac100);
+      final aac100 = AacTrack(List.filled(100, 8), 2, 4, 2);
+      final (_, bytes) = await build(aacTrack: aac100);
       final tkhds = _findBoxAll(bytes, 'tkhd');
       expect(tkhds.length, 2);
       // fullbox v0: verflags(4) creation(4) mod(4) trackid(4) reserved(4) dur(4)
@@ -227,8 +249,8 @@ void main() {
     });
 
     test('sampleRate >= 65536 时 mp4a 采样率字段写 0（esds 为准）', () async {
-      final aac96k = AacInfo([Uint8List(8)], 2, 0, 2); // freqIndex 0 = 96000
-      final (_, bytes) = await build(aacInfo: aac96k);
+      const aac96k = AacTrack([8], 2, 0, 2); // freqIndex 0 = 96000
+      final (_, bytes) = await build(aacTrack: aac96k);
       // mp4a payload 前 24 字节后是 16.16 采样率的高 16 位
       final i = _fourCCIndex(bytes, 'mp4a')!;
       final rateHi = (bytes[i + 28] << 8) | bytes[i + 29];
@@ -241,18 +263,11 @@ void main() {
       // audio 首 PTS 早于 video 首 DTS（video dts0=0，这里 audio=-900 不合法，
       // 用 video dts 抬高来模拟：让 video 全部 +900，audio 基线 0）。
       final shifted = samples
-          .map((s) => VideoSample(s.data, s.pts + 900, s.dts + 900, s.keyframe))
+          .map((s) =>
+              VideoSample(s.offset, s.size, s.pts + 900, s.dts + 900, s.keyframe))
           .toList();
-      final r = await buildMp4(
-        vsamples: shifted,
-        sps: sps,
-        pps: pps,
-        width: 320,
-        height: 240,
-        aac: aac,
-        firstAudioPts: 0, // audio 更早
-        outPath: '${tmp.path}/baseline_a.mp4',
-      );
+      // audio 更早：firstAudioPts=0
+      final (r, _) = await build(vsamples: shifted, firstAudioPts: 0);
       // globalMin=0 -> video 首 dts 相对基线=900；minPts=900 -> 空编辑=900
       expect(r.emptyEditDur, 900);
     });
@@ -260,21 +275,12 @@ void main() {
     test('视频 DTS 早于音频 PTS 时，空编辑用 PTS 而非被 DTS 污染', () async {
       // 真实点播样本形态：含 B 帧，视频首个 DTS(126000) < 音频首 PTS(129910)，
       // 视频最小 PTS = 132000（reorder 延迟 6000）。
-      final real = <VideoSample>[
-        VideoSample(Uint8List(100), 132000, 126000, true), // I: pts>dts
-        VideoSample(Uint8List(80), 138000, 129000, false), // P
-        VideoSample(Uint8List(60), 135000, 132000, false), // B
-      ];
-      final r = await buildMp4(
-        vsamples: real,
-        sps: sps,
-        pps: pps,
-        width: 320,
-        height: 240,
-        aac: aac,
-        firstAudioPts: 129910,
-        outPath: '${tmp.path}/baseline_b.mp4',
-      );
+      final real = _vtable([
+        (100, 132000, 126000, true), // I: pts>dts
+        (80, 138000, 129000, false), // P
+        (60, 135000, 132000, false), // B
+      ]);
+      final (r, _) = await build(vsamples: real, firstAudioPts: 129910);
       // 正确：globalMin=min(129910,132000)=129910 -> dEmpty=132000-129910=2090
       expect(r.emptyEditDur, 132000 - 129910); // 2090
       // 若基线被 DTS 污染（globalMin=126000）会得到 6000，必须不是这个值
