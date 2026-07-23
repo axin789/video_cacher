@@ -1,6 +1,11 @@
 import 'dart:typed_data';
 
-import 'package:pointycastle/export.dart';
+// 按需导入代替 export.dart 全家桶，避免把用不到的算法钉进 AOT 产物。
+import 'package:pointycastle/api.dart';
+import 'package:pointycastle/block/aes.dart';
+import 'package:pointycastle/block/modes/cbc.dart';
+import 'package:pointycastle/padded_block_cipher/padded_block_cipher_impl.dart';
+import 'package:pointycastle/paddings/pkcs7.dart';
 
 /// HLS 分片解密器：AES-128-CBC + PKCS7 去填充。
 ///
