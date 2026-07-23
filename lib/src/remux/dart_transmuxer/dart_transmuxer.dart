@@ -3,8 +3,10 @@ import 'dart:developer' as developer;
 import 'dart:io';
 import 'dart:isolate';
 
+import 'package:flutter/services.dart' show RootIsolateToken;
 import 'package:path/path.dart' as p;
 
+import '../../download/hls/platform_aes.dart';
 import '../../log.dart';
 import '../remuxer.dart';
 import 'transmux_worker.dart';
@@ -60,6 +62,13 @@ class DartTransmuxer implements Remuxer {
   }) async {
     _canceled.remove(taskId);
     final sw = Stopwatch()..start();
+
+    // 硬件 AES 的能力探测只能在根 isolate 做（见 PlatformAes 类注释）；探测
+    // 通过才把 token 交给 worker，worker 拿到它才敢发平台消息。
+    final token = crypto != null && await PlatformAes.ensureAvailable()
+        ? RootIsolateToken.instance
+        : null;
+
     final w = _ActiveWorker(ReceivePort(), ReceivePort(), outMp4);
     _workers[taskId] = w;
 
@@ -92,7 +101,8 @@ class DartTransmuxer implements Remuxer {
         transmuxWorker,
         TransmuxRequest(
             w.port.sendPort, segmentFiles, outMp4, VideoCacherLog.verbose,
-            crypto: crypto),
+            crypto: crypto,
+            rootIsolateToken: token),
         onExit: w.exitPort.sendPort,
         debugName: 'video_cacher.transmux.$taskId',
       );

@@ -3,7 +3,10 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart' show RootIsolateToken;
+
 import '../../download/hls/aes_decryptor.dart';
+import '../../download/hls/platform_aes.dart';
 import '../../log.dart';
 import '../remuxer.dart' show TransmuxCrypto;
 import 'aac_adts.dart';
@@ -22,16 +25,22 @@ void _log(String msg) {
 ///
 /// 静态变量不跨 isolate（worker 里读到的是自己的副本），verbose 必须显式带入。
 /// [crypto] 的字段（Uint8List/Map）均可随 spawn 消息发送。
+///
+/// [rootIsolateToken] 只能在根 isolate 取（`RootIsolateToken.instance`），且
+/// 只在主侧硬件 AES 探测通过时才带上；本 worker 拿它初始化
+/// `BackgroundIsolateBinaryMessenger` 后即可用平台通道做硬件解密，为空时解密
+/// 自动落纯 Dart 兜底。
 class TransmuxRequest {
   final SendPort reply;
   final List<String> segmentFiles;
   final String outMp4;
   final bool verbose;
   final TransmuxCrypto? crypto;
+  final RootIsolateToken? rootIsolateToken;
 
   const TransmuxRequest(
       this.reply, this.segmentFiles, this.outMp4, this.verbose,
-      {this.crypto});
+      {this.crypto, this.rootIsolateToken});
 }
 
 /// remux worker isolate 入口：跑完整条转封装流水线并经 [TransmuxRequest.reply]
@@ -44,6 +53,9 @@ class TransmuxRequest {
 /// `Isolate.kill` 完成，本函数无协作取消点。
 Future<void> transmuxWorker(TransmuxRequest req) async {
   VideoCacherLog.verbose = req.verbose; // 本 isolate 自己的静态副本
+  // 背景 isolate 默认没有 BinaryMessenger，必须用根 isolate 的 token 装一个；
+  // token 为空即代表主侧探测未通过，本 isolate 全程走纯 Dart 解密。
+  PlatformAes.initBackgroundIsolate(req.rootIsolateToken);
   try {
     final size = await _pipeline(req);
     req.reply.send({'done': size});
@@ -73,7 +85,8 @@ const int _prepareAhead = 2;
 const int _prefetchByteBudget = 24 * 1024 * 1024;
 
 /// 准备一个分片：明文片整片读入（不 spawn 子 isolate——无加密输入时流水线
-/// 只是按片读盘，无额外开销）；加密片的「读 + 解密」整体放子 isolate。
+/// 只是按片读盘，无额外开销）；加密片优先走系统硬件 AES（原生侧自带后台线程，
+/// 不必再开子 isolate），平台不可用时「读 + 解密」整体退回子 isolate 纯 Dart。
 /// diskBytes 为磁盘文件字节数——进度按它累计，与引擎按文件长度算的
 /// totalBytes 对齐（密文含 PKCS7 填充，比明文长）。
 Future<({Uint8List plain, int diskBytes})> _prepareSegment(
@@ -83,9 +96,17 @@ Future<({Uint8List plain, int diskBytes})> _prepareSegment(
     final bytes = await File(path).readAsBytes();
     return (plain: bytes, diskBytes: bytes.length);
   }
+  final key = crypto!.key;
+  if (PlatformAes.enabled) {
+    final cipher = await File(path).readAsBytes();
+    final plain = await PlatformAes.decryptCbc(cipher, key, iv);
+    if (plain != null) return (plain: plain, diskBytes: cipher.length);
+    // 平台侧这一片失败（如密文损坏）：退回纯 Dart 重算，由它抛出真实错误。
+    // 只发生在必然出错的分片上，重复读盘无需优化。
+  }
   final diskBytes = await File(path).length();
   return (
-    plain: await _readAndDecryptInIsolate(path, crypto!.key, iv),
+    plain: await _readAndDecryptInIsolate(path, key, iv),
     diskBytes: diskBytes,
   );
 }
@@ -144,6 +165,14 @@ Future<int> _pipeline(TransmuxRequest req) async {
   final sw = Stopwatch()..start();
   final segmentFiles = req.segmentFiles;
   final outMp4 = req.outMp4;
+
+  // 每次 remux 打一条解密后端，真机上一眼可见走的是硬件还是纯 Dart。
+  if (req.crypto != null) {
+    VideoCacherLog.d(
+        'crypto',
+        'AES backend: '
+            '${PlatformAes.enabled ? 'platform(hardware)' : 'dart(software fallback)'}');
+  }
 
   // ---- 两遍全流式：内存峰值与视频大小解耦 ----
   // 第 1 遍：demux 边喂边把已封口单元转出（视频 AU→AVCC、音频 PES→裸 AAC 帧）
@@ -234,10 +263,10 @@ Future<int> _pipeline(TransmuxRequest req) async {
       // ---- 分片准备流水线：读盘/解密与 demux 并行 ----
       // 旧实现在喂入循环里串行内联解密：喂第 i 片前 CPU 全耗在 AES 上（手机
       // 单核纯 Dart AES 仅 5-15MB/s），demux 干等。现在把「读 + 解密」提前
-      // _prepareAhead 片启动：加密片的 AES 在 Isolate.run 子 isolate 里算，
-      // 与本片的 demux/喂入及相邻片解密并行。喂入顺序与语义不变：每片喂完发
-      // 一次 progress、逐块 fail-fast；第 j 片的准备错误在消费到第 j 片时经
-      // await 原样抛出。
+      // _prepareAhead 片启动：加密片的 AES 交给系统库的原生后台线程（平台不可
+      // 用时退回 Isolate.run 子 isolate），与本片的 demux/喂入并行。喂入顺序
+      // 与语义不变：每片喂完发一次 progress、逐块 fail-fast；第 j 片的准备错误
+      // 在消费到第 j 片时经 await 原样抛出。
       // 内存上界：最多 1 + _prepareAhead 片明文同时存活（当前片 + 前瞻片），
       // 约 3 × 分片大小、数十 MB 级——以此换 AES 不再串行阻塞流水线。
       // 取消：主侧 Isolate.kill 杀本 worker 不会级联杀飞行中的 Isolate.run
