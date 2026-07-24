@@ -3,7 +3,8 @@ class DownloadConfig {
   /// 最大并发任务数。
   final int maxConcurrency;
 
-  /// 单任务内分片并发数（HLS）。
+  /// 单任务内分片并发数（HLS）。0.2.1 起解密后置到 remux，下载阶段是纯网络 IO，
+  /// 适当提高并发可更充分利用带宽（默认 4）。
   final int segConcurrency;
 
   /// HTTP 连接超时。
@@ -41,7 +42,7 @@ class DownloadConfig {
 
   const DownloadConfig({
     this.maxConcurrency = 3,
-    this.segConcurrency = 2,
+    this.segConcurrency = 4,
     this.connectTimeout = const Duration(seconds: 15),
     this.receiveTimeout = const Duration(seconds: 30),
     this.userAgent = 'video_cacher/1.0',

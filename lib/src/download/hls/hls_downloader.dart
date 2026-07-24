@@ -304,6 +304,8 @@ class HlsDownloader {
     HttpStatusException? serverError;
     Object? fatal;
     StackTrace? fatalStack;
+    var fetchedBytes = 0; // 本次实际下载字节（不含已续传的磁盘残留）
+    final sw = Stopwatch()..start();
 
     // 分片级重试：HTTP 层退避后仍 5xx（源站持续过载）时再等更久重试，
     // 而不是让一个分片直接判死整个任务。404/410、取消按原语义立即冒泡。
@@ -339,6 +341,7 @@ class HlsDownloader {
           final path =
               encrypted ? _encSegPath(dir, seg.index) : _segPath(dir, seg.index);
           await _writeAtomic(path, bytes);
+          fetchedBytes += bytes.length;
           done++;
           onProgress(done, total);
         } on UrlExpiredException catch (e) {
@@ -376,6 +379,14 @@ class HlsDownloader {
     }
     if (expired != null) throw expired!;
     if (serverError != null) throw serverError!;
+
+    final ms = sw.elapsedMilliseconds;
+    final mb = fetchedBytes / (1024 * 1024);
+    final mbps = ms > 0 ? mb / (ms / 1000) : 0;
+    VideoCacherLog.d(
+        'hls',
+        '[$taskId] 本轮下载 ${mb.toStringAsFixed(1)}MB / ${ms}ms '
+        '= ${mbps.toStringAsFixed(2)}MB/s（并发 $_segConcurrency）');
   }
 
   /// 原子写：先写 `.tmp` 并 flush，再 rename 到目标；rename 是同名同盘的原子操作。
